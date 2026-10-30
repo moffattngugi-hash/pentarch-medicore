@@ -91,7 +91,7 @@ function POS() {
   return <div className="grid g-side">
     <div className="stack">
       <input value={q} onChange={e => setQ(e.target.value)} placeholder="Scan barcode or search medicine, supply or device…" autoFocus style={{ fontSize: 15, padding: 12 }} />
-      <div className="row" style={{ gap: 5 }}>{cats.map(x => <button key={x} className={'sm' + (cat === x ? ' primary' : '')} onClick={() => setCat(x)}>{x}</button>)}</div>
+    <div className="row" style={{ gap: 5 }}>{cats.map(x => <button key={x} className={'sm' + (cat === x ? ' primary' : '')} onClick={() => setCat(x)}>{x}</button>)}</div>
       <div className="pgrid">{results.map(i => <button key={i.id} type="button" className={'pcard' + (i.stock <= 0 ? ' out' : '')} disabled={i.stock <= 0} onClick={() => add(i)}>
         <div className="art"><ProductArt item={i} size={110} /></div>
         <span className="nm">{i.name}</span>
@@ -135,6 +135,7 @@ function Inventory() {
   const [open, setOpen] = useState(null);
   const [receive, setReceive] = useState(null);
   const [adding, setAdding] = useState(false);
+  const [valueOpen, setValueOpen] = useState(false);
   const cats = useCategories(items);
   const soon = new Date(Date.now() + 90 * 864e5).toISOString().slice(0, 10);
   const list = (items || []).filter(i => (cat === 'All' || i.shop_cat === cat) && (i.name + ' ' + (i.grp || '') + ' ' + (i.code || '')).toLowerCase().includes(q.toLowerCase()))
@@ -142,10 +143,10 @@ function Inventory() {
   const all = items || [];
   return <div className="stack">
     <div className="grid g4">
-      <Stat icon="box" label="Items in catalogue" value={all.length} hint={`${all.filter(i => i.stock > 0).length} in stock`} />
-      <Stat icon="cash" label="Stock value at cost" value={money(all.reduce((a, i) => a + i.stock * (i.cost || 0), 0))} hint={`${money(all.reduce((a, i) => a + i.stock * i.price, 0))} at selling price`} />
-      <Stat icon="alert" label="Below reorder level" value={all.filter(i => i.stock <= i.reorder_level).length} tone="warn" />
-      <Stat icon="appointments" label="Expiring in 90 days" value={all.filter(i => i.next_expiry && i.next_expiry <= soon).length} hint={`${all.filter(i => i.expired_qty > 0).length} with expired batches`} />
+      <Stat icon="box" label="Items in catalogue" value={all.length} hint={`${all.filter(i => i.stock > 0).length} in stock · ${all.filter(i => i.stock <= 0).length} out of stock`} onClick={() => { setFilter(filter === 'out' ? 'all' : 'out'); setCat('All'); }} />
+      <Stat icon="cash" label="Stock value at cost" value={money(all.reduce((a, i) => a + i.stock * (i.cost || 0), 0))} hint={`${money(all.reduce((a, i) => a + i.stock * i.price, 0))} at selling price`} onClick={() => setValueOpen(true)} />
+      <Stat icon="alert" label="Below reorder level" value={all.filter(i => i.stock <= i.reorder_level).length} tone="warn" hint="Tap to list them and reorder" onClick={() => { setFilter('low'); setCat('All'); setView('list'); }} />
+      <Stat icon="appointments" label="Expiring in 90 days" value={all.filter(i => i.next_expiry && i.next_expiry <= soon).length} hint={`${all.filter(i => i.expired_qty > 0).length} with expired batches`} onClick={() => { setFilter('expiry'); setCat('All'); setView('list'); }} />
     </div>
     <div className="row">
       <div style={{ position: 'relative', flex: '1 1 260px', maxWidth: 360 }}><input value={q} onChange={e => setQ(e.target.value)} placeholder="Search name, group or code" style={{ paddingLeft: 34 }} />
@@ -154,6 +155,8 @@ function Inventory() {
       <div className="seg"><button className={view === 'grid' ? 'on' : ''} onClick={() => setView('grid')} aria-label="Grid"><Icon name="grid" size={15} /></button><button className={view === 'list' ? 'on' : ''} onClick={() => setView('list')} aria-label="List"><Icon name="list" size={15} /></button></div>
       <div className="right row"><button onClick={() => setAdding(true)}><Icon name="plus" size={15} />New item</button><button className="primary" onClick={() => setReceive({})}>Receive stock</button></div>
     </div>
+    {filter !== 'all' && <div className="tip"><Icon name="info" size={16} /><div>Showing <b>{{ low: 'items below reorder level', out: 'out-of-stock items', expiry: 'items expiring within 90 days or with expired batches' }[filter]}</b> ({list.length}). <a href="#" onClick={e => { e.preventDefault(); setFilter('all'); }}>Show all stock</a></div></div>}
+    {valueOpen && <StockValue items={all} onClose={() => setValueOpen(false)} />}
     <div className="row" style={{ gap: 5 }}>{cats.map(x => <button key={x} className={'sm' + (cat === x ? ' primary' : '')} onClick={() => setCat(x)}>{x}</button>)}</div>
     {view === 'grid' ? <div className="pgrid">{list.map(i => <button key={i.id} type="button" className={'pcard' + (i.stock <= 0 ? ' out' : '')} onClick={() => setOpen(i.id)}>
       <div className="art"><ProductArt item={i} size={110} /></div>
@@ -328,4 +331,20 @@ function Controlled() {
         <td className="num" style={{ color: r.qty < 0 ? 'var(--bad)' : 'var(--good)' }}>{r.qty > 0 ? '+' : ''}{r.qty} {pl(r.unit, Math.abs(r.qty))}</td><td>{r.ref}</td><td className="small">{r.by_user}</td></tr>)}</tbody>
     </table>{rows && !rows.length && <Empty icon="shield">No controlled drug movements yet.</Empty>}</div>
   </div>;
+}
+
+// Stock value broken down by category (opened from the stat card)
+function StockValue({ items, onClose }) {
+  const by = {};
+  items.forEach(i => { const k = i.shop_cat || 'Other'; by[k] = by[k] || { cat: k, cost: 0, retail: 0, n: 0 }; by[k].cost += i.stock * (i.cost || 0); by[k].retail += i.stock * i.price; by[k].n += i.stock > 0 ? 1 : 0; });
+  const rows = Object.values(by).sort((a, b) => b.cost - a.cost);
+  const max = Math.max(1, ...rows.map(r => r.cost));
+  const top = [...items].sort((a, b) => b.stock * (b.cost || 0) - a.stock * (a.cost || 0)).slice(0, 10);
+  return <Modal title="Stock value by category" onClose={onClose} wide>
+    <table className="table"><thead><tr><th>Category</th><th style={{ width: '35%' }} /><th className="num">Items in stock</th><th className="num">At cost</th><th className="num">At selling price</th><th className="num">Margin</th></tr></thead><tbody>
+      {rows.map(r => <tr key={r.cat}><td><b>{r.cat}</b></td><td><div className="minibar"><i style={{ width: (r.cost / max * 100) + '%' }} /></div></td><td className="num">{r.n}</td><td className="num">{money(r.cost)}</td><td className="num">{money(r.retail)}</td><td className="num">{r.retail ? Math.round((r.retail - r.cost) / r.retail * 100) : 0}%</td></tr>)}
+    </tbody></table>
+    <h4 className="mt">Ten items holding the most money</h4>
+    <table className="table"><tbody>{top.map(i => <tr key={i.id}><td><div className="row" style={{ flexWrap: 'nowrap' }}><ProductArt item={i} size={32} rounded={8} /><b>{i.name}</b></div></td><td className="small">{i.stock_text}</td><td className="num">{money(i.stock * (i.cost || 0))}</td></tr>)}</tbody></table>
+  </Modal>;
 }

@@ -53,7 +53,7 @@ function Finance() {
       <Stat label="Collected" value={money(total)} hint={`${fmtDate(d.from)} – ${fmtDate(d.to)}`} />
       <Stat label="Visits" value={d.visits} />
       <Stat label="New patients" value={d.newPatients} />
-      <Stat label="Debtors" value={money(d.debtors.reduce((a, b) => a + b.balance, 0))} hint={`${d.debtors.length} credit bills`} />
+      <Stat label="Debtors" value={money(d.debtors.reduce((a, b) => a + b.balance, 0))} hint={`${d.debtors.length} credit bills`} href="#/billing" />
     </div>
     <div className="card"><h3>Collections by day</h3><div style={{ height: 230 }}><ResponsiveContainer>
       <BarChart data={d.byDay}><CartesianGrid vertical={false} stroke="#e2e8f0" /><XAxis dataKey="day" fontSize={11} tickFormatter={x => x.slice(5)} tickLine={false} axisLine={false} />
@@ -76,7 +76,7 @@ function Stock() {
     <div className="grid g4">
       <Stat label="Stock value (cost)" value={money(d.totalValue)} />
       <Stat label="Stock value (retail)" value={money(d.totalRetail)} hint={`Potential margin ${money(d.totalRetail - d.totalValue)}`} />
-      <Stat label="Below reorder level" value={d.items.filter(i => i.stock <= i.reorder_level).length} tone="warn" />
+      <Stat label="Below reorder level" value={d.items.filter(i => i.stock <= i.reorder_level).length} tone="warn" href="#/pharmacy" />
       <Stat label="Expiring in 90 days" value={d.nearExpiry.length} hint={`${d.expired.length} batches already expired`} tone={d.nearExpiry.length ? 'warn' : null} />
     </div>
     <div className="card"><div className="cardhead"><h3>Near expiry and expired</h3></div>

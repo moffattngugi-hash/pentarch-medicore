@@ -63,11 +63,12 @@ function sessionFor(u) {
 const slug = s => (s || 'facility').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(' ')[0].slice(0, 12) || 'facility';
 function uniqueUsername(base) { let u = base, i = 2; while (R.get('SELECT id FROM users WHERE username=?', u)) u = base + i++; return u; }
 
-app.get('/api/health', (req, res) => res.json({ ok: true, time: now() }));
+const VERSION = require('../package.json').version;
+app.get('/api/health', (req, res) => res.json({ ok: true, time: now(), version: VERSION }));
 app.get('/api/bootstrap', wrap(() => ({
   hasOrgs: !!R.get('SELECT id FROM orgs LIMIT 1'),
   types: Object.fromEntries(Object.entries(D.TYPES).map(([k, v]) => [k, { label: v.label, sample: v.sample, defaults: v.defaults }])),
-  lan: lanAddresses(),
+  lan: lanAddresses(), version: VERSION,
 })));
 app.get('/api/login-users', wrap(() => {
   const orgs = R.all('SELECT * FROM orgs');
@@ -370,6 +371,58 @@ app.get('/api/dashboard', wrap(() => {
     activePregnancies: c.maternity ? get("SELECT COUNT(*) c FROM pregnancies WHERE status='active'").c : null,
     sample: !!get('SELECT id FROM patients WHERE sample=1 LIMIT 1'),
   };
+}));
+
+// Drill-down behind each dashboard card
+const who = "COALESCE(p.first_name||' '||p.last_name, b.customer_name, 'Walk-in customer')";
+app.get('/api/dashboard/detail/:k', wrap(req => {
+  const t = today(), k = req.params.k;
+  if (k === 'revenue') {
+    const day = d => get('SELECT COALESCE(SUM(amount),0) a FROM payments WHERE substr(created_at,1,10)=?', d).a;
+    const week = []; for (let i = 1; i <= 7; i++) week.push(day(D.addDays(now(), -i)));
+    return {
+      payments: all(`SELECT pm.*, ${who} who, b.receipt_no FROM payments pm LEFT JOIN bills b ON b.id=pm.bill_id LEFT JOIN patients p ON p.id=b.patient_id
+        WHERE substr(pm.created_at,1,10)=? ORDER BY pm.created_at DESC`, t),
+      byMethod: all('SELECT method, COUNT(*) n, SUM(amount) amt FROM payments WHERE substr(created_at,1,10)=? GROUP BY method ORDER BY amt DESC', t),
+      byKind: all("SELECT COALESCE(kind,'other') kind, SUM(amount) amt FROM bill_lines WHERE substr(created_at,1,10)=? GROUP BY kind ORDER BY amt DESC", t),
+      yesterday: week[0], avg7: Math.round(week.reduce((a, b) => a + b, 0) / 7), today: day(t),
+    };
+  }
+  if (k === 'queue') {
+    const rows = all(`SELECT v.*, p.first_name||' '||p.last_name name, p.mrn, p.sex, p.dob FROM visits v JOIN patients p ON p.id=v.patient_id
+      WHERE v.status NOT IN ('closed','admitted') AND v.type!='IPD' ORDER BY ${PRIORITY}, v.created_at`);
+    return {
+      rows, byStatus: all("SELECT status, COUNT(*) n FROM visits WHERE status NOT IN ('closed','admitted') AND type!='IPD' GROUP BY status"),
+      seenToday: get("SELECT COUNT(*) c FROM visits WHERE substr(created_at,1,10)=? AND status='closed'", t).c,
+      visitsToday: get('SELECT COUNT(*) c FROM visits WHERE substr(created_at,1,10)=?', t).c,
+      newToday: get('SELECT COUNT(*) c FROM patients WHERE substr(created_at,1,10)=?', t).c,
+    };
+  }
+  if (k === 'lab') {
+    return {
+      rows: all(`SELECT lo.*, t.name test, t.dept, t.tat, p.first_name||' '||p.last_name name, p.id pid FROM lab_orders lo JOIN lab_tests t ON t.id=lo.test_id
+        JOIN patients p ON p.id=lo.patient_id WHERE lo.status IN ('ordered','collected','sent_out','resulted') ORDER BY lo.created_at`),
+      byDept: all("SELECT t.dept, COUNT(*) n FROM lab_orders lo JOIN lab_tests t ON t.id=lo.test_id WHERE lo.status IN ('ordered','collected','sent_out','resulted') GROUP BY t.dept ORDER BY n DESC"),
+      doneToday: get("SELECT COUNT(*) c FROM lab_orders WHERE substr(resulted_at,1,10)=?", t).c,
+      abnormalToday: get("SELECT COUNT(*) c FROM lab_orders WHERE substr(resulted_at,1,10)=? AND flag IS NOT NULL AND flag!='N'", t).c,
+    };
+  }
+  if (k === 'beds') {
+    return {
+      wards: all(`SELECT w.*, (SELECT COUNT(*) FROM beds WHERE ward_id=w.id) total,
+        (SELECT COUNT(*) FROM admissions a JOIN beds bd ON bd.id=a.bed_id WHERE bd.ward_id=w.id AND a.status='admitted') occupied FROM wards w`),
+      rows: all(`SELECT a.*, p.first_name||' '||p.last_name name, p.id pid, bd.label bed, w.name ward FROM admissions a JOIN patients p ON p.id=a.patient_id
+        LEFT JOIN beds bd ON bd.id=a.bed_id LEFT JOIN wards w ON w.id=bd.ward_id WHERE a.status='admitted' ORDER BY a.admitted_at`),
+      admittedToday: get('SELECT COUNT(*) c FROM admissions WHERE substr(admitted_at,1,10)=?', t).c,
+      dischargedToday: get('SELECT COUNT(*) c FROM admissions WHERE substr(discharged_at,1,10)=?', t).c,
+    };
+  }
+  if (k === 'bills') {
+    const rows = all(`SELECT b.*, ${who} who FROM bills b LEFT JOIN patients p ON p.id=b.patient_id WHERE b.status IN ('open','credit') ORDER BY b.created_at`)
+      .map(b => ({ ...b, ...billTotals(b.id) })).filter(b => b.balance > 0);
+    return { rows, open: rows.filter(b => b.status === 'open'), credit: rows.filter(b => b.status === 'credit') };
+  }
+  fail('Unknown card');
 }));
 
 // ---------- patients ----------

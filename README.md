@@ -12,6 +12,8 @@ By **Pentarch Systems Solutions**.
 3. Double-click `start-medicore.bat`. The first run needs internet for a few minutes to install and build; after that it runs fully offline.
 4. The browser opens on the setup wizard: choose **Pharmacy, Clinic or Hospital**, tick the services, enter the facility and owner details, and choose **sample data** (demos/training) or **empty** (real use).
 
+**Updating:** close the black window, copy the `data` folder somewhere safe, unzip the new version over the same folder, then double-click `start-medicore.bat`. It notices the new version (from `version.txt`), reinstalls and rebuilds once, then starts. The version shows at the bottom of the menu.
+
 **Other PCs, tablets and phones do not need Node.js or any installation.** Connect them to the same Wi-Fi and open the address shown in the black console window, e.g. `http://192.168.1.20:4000` (also in Settings → Other devices). Reserve a fixed IP for the main computer in the router.
 
 ## Sign-in
@@ -24,6 +26,7 @@ By **Pentarch Systems Solutions**.
 
 ## What's inside
 
+- **Dashboards you can drill into**: every summary card (collections, waiting patients, lab, beds, unpaid bills, stock value, branch totals) opens the list and breakdown behind it.
 - **Superadmin console**: every client organisation and branch, patients, collections, low stock; open any branch for support; create new facilities.
 - **Organisations and branches**: one owner, many branches of any type (pharmacy + clinic + hospital). Each branch keeps its own patients, stock and money; the **All branches** page combines what matters.
 - **Switch type without losing data**: Settings → Type & services changes modules and menus only.

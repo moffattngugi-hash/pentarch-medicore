@@ -78,10 +78,13 @@ export function Tabs({ tabs, value, onChange }) {
   })}</div>;
 }
 export function Empty({ children, icon = 'search' }) { return <div className="empty"><span className="empty-ic"><Icon name={icon} size={22} /></span><div>{children}</div></div>; }
-export function Stat({ label, value, hint, tone, icon }) {
-  return <div className="card stat">
+export function Stat({ label, value, hint, tone, icon, onClick, href }) {
+  const go = onClick || (href ? () => (window.location.hash = href) : null);
+  return <div className={'card stat' + (go ? ' stat-click' : '')} onClick={go || undefined} role={go ? 'button' : undefined} tabIndex={go ? 0 : undefined}
+    onKeyDown={go ? e => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), go()) : undefined}>
     {icon && <span className="stat-ic"><Icon name={icon} size={18} /></span>}
     <span className="label">{label}</span><span className="value" style={tone ? { color: `var(--${tone})` } : null}>{value}</span>{hint && <span className="hint">{hint}</span>}
+    {go && <span className="stat-more">View details <Icon name="chev" size={12} /></span>}
   </div>;
 }
 // Page header with icon and optional one-line guidance
@@ -126,6 +129,8 @@ export function FlagBadge({ flag }) {
 }
 
 const ICONS = {
+  chev: 'M9 6l6 6-6 6',
+  trend: 'M3 17l6-6 4 4 8-8M15 7h6v6',
   dashboard: 'M3 3h7v9H3zM14 3h7v5h-7zM14 12h7v9h-7zM3 16h7v5H3z',
   patients: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75',
   queue: 'M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01',

@@ -1,7 +1,7 @@
 import React, { useContext, useState } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
 import { ConfigContext } from '../App';
-import { useData, Stat, Badge, PageHead, Tip, money, Icon } from '../ui';
+import { useData, Stat, Badge, PageHead, Tip, money, Icon, Modal } from '../ui';
 import { TYPE_ART } from './Onboard';
 import { NewBranch } from './Admin';
 
@@ -13,6 +13,7 @@ export default function Branches({ onOpen, refreshProfile }) {
   const [d, reload] = useData('/org/overview');
   const [boot] = useData('/bootstrap');
   const [adding, setAdding] = useState(false);
+  const [metric, setMetric] = useState(null);
   if (!d) return <div className="page">Loading…</div>;
   const B = d.branches;
   const sum = k => B.reduce((a, b) => a + (b[k] || 0), 0);
@@ -25,10 +26,10 @@ export default function Branches({ onOpen, refreshProfile }) {
       </PageHead>
       {B.length === 1 && <Tip id="branches">Have another pharmacy, clinic or hospital? Add it as a branch. It can be a different type, and you switch between branches from the selector at the top of the menu.</Tip>}
       <div className="grid g4">
-        <Stat icon="cash" label="Collected today, all branches" value={money(sum('revenueToday'))} hint={`${money(sum('revenue7'))} in 7 days`} />
-        <Stat icon="patients" label="Patients on file" value={sum('patients').toLocaleString()} hint={`${sum('visitsToday')} visits today · ${sum('inQueue')} waiting now`} />
-        <Stat icon="wards" label="Bed occupancy" value={beds.length ? `${beds.reduce((a, b) => a + b.beds.occupied, 0)} / ${beds.reduce((a, b) => a + b.beds.total, 0)}` : '—'} hint={beds.length ? 'across branches with wards' : 'no branch has wards'} />
-        <Stat icon="box" label="Stock value (cost)" value={money(sum('stockValue'))} hint={`${sum('lowStock')} items below reorder level`} tone={sum('lowStock') ? 'warn' : null} />
+        <Stat icon="cash" label="Collected today, all branches" value={money(sum('revenueToday'))} hint={`${money(sum('revenue7'))} in 7 days`} onClick={() => setMetric('money')} />
+        <Stat icon="patients" label="Patients on file" value={sum('patients').toLocaleString()} hint={`${sum('visitsToday')} visits today · ${sum('inQueue')} waiting now`} onClick={() => setMetric('patients')} />
+        <Stat icon="wards" label="Bed occupancy" value={beds.length ? `${beds.reduce((a, b) => a + b.beds.occupied, 0)} / ${beds.reduce((a, b) => a + b.beds.total, 0)}` : '—'} hint={beds.length ? 'across branches with wards' : 'no branch has wards'} onClick={() => setMetric('beds')} />
+        <Stat icon="box" label="Stock value (cost)" value={money(sum('stockValue'))} hint={`${sum('lowStock')} items below reorder level`} tone={sum('lowStock') ? 'warn' : null} onClick={() => setMetric('stock')} />
       </div>
       {B.length > 1 && <div className="card mt"><h3>Collections by branch, last 7 days</h3>
         <div style={{ height: 240 }}><ResponsiveContainer><BarChart data={chart}>
@@ -52,7 +53,29 @@ export default function Branches({ onOpen, refreshProfile }) {
           <div className="row mt">{b.sample ? <Badge tone="warn">sample data</Badge> : null}{b.id === c.branch?.id ? <Badge tone="brand">You are here</Badge> : <button className="sm primary right" onClick={() => onOpen(b.id)}>Open branch</button>}</div>
         </div>;
       })}</div>
+      {metric && <BranchBreakdown metric={metric} B={B} onOpen={id => { setMetric(null); onOpen(id); }} onClose={() => setMetric(null)} />}
       {adding && boot && <NewBranch types={boot.types} onClose={() => setAdding(false)} onDone={async () => { setAdding(false); await refreshProfile(); reload(); }} />}
     </div>
   );
+}
+
+// Per-branch comparison behind each combined card
+const METRICS = {
+  money: ['Collections by branch', [['Today', b => money(b.revenueToday), b => b.revenueToday], ['Last 7 days', b => money(b.revenue7), b => b.revenue7], ['Last 30 days', b => money(b.revenue30), b => b.revenue30]]],
+  patients: ['Patients by branch', [['On file', b => b.patients.toLocaleString(), b => b.patients], ['Visits today', b => b.visitsToday, b => b.visitsToday], ['Waiting now', b => b.inQueue, b => b.inQueue]]],
+  beds: ['Beds by branch', [['Occupied', b => b.beds ? `${b.beds.occupied} / ${b.beds.total}` : 'No wards', b => b.beds ? b.beds.occupied : 0], ['Occupancy', b => b.beds ? Math.round(b.beds.occupied / Math.max(1, b.beds.total) * 100) + '%' : '—', b => b.beds ? b.beds.occupied / Math.max(1, b.beds.total) : 0]]],
+  stock: ['Stock by branch', [['Value at cost', b => money(b.stockValue), b => b.stockValue], ['Below reorder level', b => b.lowStock, b => b.lowStock]]],
+};
+export function BranchBreakdown({ metric, B, onOpen, onClose }) {
+  const [title, cols] = METRICS[metric];
+  const max = Math.max(1, ...B.map(cols[0][2]));
+  return <Modal title={title} onClose={onClose} wide>
+    <table className="table"><thead><tr><th>Branch</th><th style={{ width: '30%' }} />{cols.map(c => <th key={c[0]} className="num">{c[0]}</th>)}<th /></tr></thead><tbody>
+      {[...B].sort((a, b) => cols[0][2](b) - cols[0][2](a)).map(b => <tr key={b.id}>
+        <td><b>{b.name}</b><div className="faint small">{TYPE_LABEL[b.type]} · {b.location || ''}</div></td>
+        <td><div className="minibar"><i style={{ width: (cols[0][2](b) / max * 100) + '%', background: b.color || TYPE_ART[b.type]?.color }} /></div></td>
+        {cols.map(c => <td key={c[0]} className="num">{c[1](b)}</td>)}
+        <td>{onOpen && <button className="sm" onClick={() => onOpen(b.id)}>Open</button>}</td></tr>)}
+    </tbody></table>
+  </Modal>;
 }

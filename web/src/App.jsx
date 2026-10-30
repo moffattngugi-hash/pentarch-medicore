@@ -129,6 +129,7 @@ export default function App() {
             {nav.map(([k, label, icon]) => <a key={k} href={'#/' + k} className={current === k || (k === 'queue' && current === 'visit') ? 'on' : ''}><Icon name={icon} />{label}</a>)}
             <div className="sep">Public</div>
             <a href={'/site?b=' + branch} target="_blank" rel="noreferrer"><Icon name="globe" />Facility website</a>
+            <div className="ver">MediCore v{boot?.version || ''}</div>
           </nav>
           <div className="me">
             <span className="avatar">{initials || 'U'}</span>
@@ -136,7 +137,7 @@ export default function App() {
             <button className="ghost sm right" style={{ color: '#cbd5e1' }} onClick={logout} title="Sign out" aria-label="Sign out"><Icon name="logout" size={16} /></button>
           </div>
         </aside>
-        <main className="main">{pageAllowed ? (P[current] || <Dashboard />) : <div className="page"><div className="alert warn">Your role does not have access to this page. Ask the administrator if you need it.</div></div>}</main>
+        <main className="main">{pageAllowed ? <Guard key={current + (id || '')}>{P[current] || <Dashboard />}</Guard> : <div className="page"><div className="alert warn">Your role does not have access to this page. Ask the administrator if you need it.</div></div>}</main>
       </div>
       <Toaster />
     </ConfigContext.Provider>
@@ -178,4 +179,20 @@ function Login({ onLogin }) {
       </div>
     </div>
   );
+}
+
+// Keeps one broken screen from blanking the whole system; moving to another page resets it
+class Guard extends React.Component {
+  constructor(p) { super(p); this.state = { err: null }; }
+  static getDerivedStateFromError(err) { return { err }; }
+  componentDidCatch(err) { console.error('Screen error', err); }
+  render() {
+    if (!this.state.err) return this.props.children;
+    return <div className="page"><div className="card" style={{ maxWidth: 560 }}>
+      <h2>Something went wrong on this screen</h2>
+      <p className="muted">Your data is safe. Go back to the dashboard or reload this page. If it keeps happening, note what you clicked and tell Pentarch support.</p>
+      <p className="faint small">{String(this.state.err?.message || this.state.err)}</p>
+      <div className="row mt"><button onClick={() => { window.location.hash = '#/dashboard'; }}>Dashboard</button><button className="primary" onClick={() => window.location.reload()}>Reload</button></div>
+    </div></div>;
+  }
 }

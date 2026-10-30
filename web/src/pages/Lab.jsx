@@ -44,6 +44,8 @@ export default function Lab() {
   const [done, reloadD] = useData('/lab/orders?status=done');
   const [tests, reloadT] = useData('/lab/tests');
   const [entering, setEntering] = useState(null);
+  const [only, setOnly] = useState(null);
+  const show = st => { setTab('pending'); setOnly(only === st ? null : st); };
   const reload = () => { reloadP(); reloadD(); };
   const collect = async o => { await act(() => api.post(`/lab/orders/${o.id}/collect`), 'Sample collected'); reload(); };
   const validate = async o => { await act(() => api.post(`/lab/orders/${o.id}/validate`), 'Result validated and released'); reload(); };
@@ -53,17 +55,18 @@ export default function Lab() {
     <div className="page">
       <PageHead icon="lab" title="Laboratory" sub={c.lab === 'both' ? 'In-house tests plus requisitions to partner labs' : c.lab === 'outsourced' ? 'All tests go to partner labs; results are entered on return' : 'In-house laboratory'} />
       <div className="grid g4" style={{ marginBottom: 16 }}>
-        <Stat icon="lab" label="Waiting for sample" value={pend.filter(o => o.status === 'ordered').length} />
-        <Stat icon="queue" label="Sample taken, running" value={pend.filter(o => o.status === 'collected').length} />
-        <Stat icon="referrals" label="Sent to outside labs" value={pend.filter(o => o.status === 'sent_out').length} />
-        <Stat icon="check" label="Waiting validation" value={toValidate.length} tone={toValidate.length ? 'warn' : null} />
+        <Stat icon="lab" label="Waiting for sample" value={pend.filter(o => o.status === 'ordered').length} onClick={() => show('ordered')} />
+        <Stat icon="queue" label="Sample taken, running" value={pend.filter(o => o.status === 'collected').length} onClick={() => show('collected')} />
+        <Stat icon="referrals" label="Sent to outside labs" value={pend.filter(o => o.status === 'sent_out').length} onClick={() => show('sent_out')} />
+        <Stat icon="check" label="Waiting validation" value={toValidate.length} tone={toValidate.length ? 'warn' : null} onClick={() => { setOnly(null); setTab('validate'); }} />
       </div>
       <Tabs value={tab} onChange={setTab} tabs={[['pending', `Worklist (${pend.length})`], ['validate', `To validate (${toValidate.length})`], ['done', 'Completed (14 days)'], ['catalogue', `Test menu (${(tests || []).length})`]]} />
       {tab === 'pending' && <>
+        {only && <div className="tip"><Icon name="info" size={16} /><div>Showing only <b>{STATUS[only]?.[0]}</b> tests. <a href="#" onClick={e => { e.preventDefault(); setOnly(null); }}>Show the whole worklist</a></div></div>}
         <Tip id="labflow">Workflow: <b>Collect sample</b> → <b>Enter result</b> → a second person <b>validates</b> before release. Abnormal values are flagged automatically against the normal range for the patient's sex.</Tip>
         <div className="tablewrap"><table className="table">
           <thead><tr><th>Ordered</th><th>Patient</th><th>Test</th><th>Sample</th><th>Where</th><th>Status</th><th /></tr></thead>
-          <tbody>{pend.map(o => <tr key={o.id}>
+          <tbody>{pend.filter(o => !only || o.status === only).map(o => <tr key={o.id}>
             <td className="small">{fmtDT(o.created_at)}</td><td><b>{o.pname}</b><div className="faint small">{o.mrn} · {o.sex} · {age(o.dob)}</div></td>
             <td><b>{o.name}</b><div><span className="dept" style={{ '--dc': DEPT_COLOR[o.dept] }}>{o.dept}</span></div></td><td className="small">{o.sample}<div className="faint">{o.tat}</div></td>
             <td className="small">{o.mode === 'outsourced' ? <Badge tone="info">{o.partner}</Badge> : 'In-house'}</td><td><StatusBadge s={o.status} /></td>
