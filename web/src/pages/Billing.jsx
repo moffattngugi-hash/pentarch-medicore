@@ -88,7 +88,10 @@ export function Checkout({ id, onClose, onChanged }) {
     ...cat.services.filter(s => s.price > 0).map(s => ({ label: `${s.name} (service)`, description: s.name, kind: s.category, ref_table: 'services', ref_id: s.id, unit_price: s.price })),
     ...cat.tests.filter(t => t.price > 0).map(t => ({ label: `${t.name} (lab)`, description: t.name, kind: 'lab', unit_price: t.price })),
     ...cat.imaging.map(t => ({ label: `${t.name} (imaging)`, description: t.name, kind: 'imaging', unit_price: t.price })),
-    ...cat.items.filter(i => i.price > 0).map(i => ({ label: `${i.name} (${i.stock} in stock)`, description: i.name, kind: 'drug', ref_table: 'items', ref_id: i.id, unit_price: i.price })),
+    ...cat.items.filter(i => i.price > 0 && i.stock > 0).map(i => {
+      const loose = i.sell_loose || i.pack_size === 1;
+      return { label: `${i.name} · ${loose ? 'per ' + i.unit : i.pack_name + ' of ' + i.pack_size} (${i.stock_text} in stock)`, description: i.name, kind: 'drug', ref_table: 'items', ref_id: i.id, mode: loose ? 'unit' : 'pack', unit_price: loose ? i.price : i.pack_price };
+    }),
   ].filter(o => addQ.length > 1 && o.label.toLowerCase().includes(addQ.toLowerCase())).slice(0, 8) : [];
   const closed = b.status !== 'open';
   const checkout = async credit => { const r = await upd(() => api.post(`/bills/${b.id}/checkout`, { credit }), credit ? 'Moved to debtors (credit)' : 'Checked out'); setReceipt(r); };

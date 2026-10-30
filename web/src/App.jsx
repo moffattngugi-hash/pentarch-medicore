@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { api, getUser, setUser } from './api';
-import { Icon, Logo, Toaster, act } from './ui';
-import Setup from './pages/Setup';
+import { api, getSession, setSession, getBranchId, setBranch, onSessionExpired } from './api';
+import { Icon, Logo, Toaster, act, toast } from './ui';
+import Onboard from './pages/Onboard';
+import Admin from './pages/Admin';
+import Branches from './pages/Branches';
 import Dashboard from './pages/Dashboard';
 import Patients from './pages/Patients';
 import PatientView from './pages/PatientView';
@@ -21,14 +23,17 @@ import Settings from './pages/Settings';
 export const ConfigContext = React.createContext({});
 
 const ROLE_PAGES = {
-  admin: '*',
+  superadmin: '*', admin: '*',
   reception: ['dashboard', 'patients', 'queue', 'appointments', 'referrals', 'billing'],
   nurse: ['dashboard', 'patients', 'queue', 'wards', 'maternity', 'referrals', 'appointments'],
   clinician: ['dashboard', 'patients', 'queue', 'lab', 'imaging', 'wards', 'maternity', 'referrals', 'appointments', 'reports'],
   lab: ['dashboard', 'patients', 'lab', 'imaging'],
   pharmacist: ['dashboard', 'patients', 'queue', 'pharmacy', 'billing', 'reports'],
-  cashier: ['dashboard', 'billing', 'pharmacy', 'reports']
+  cashier: ['dashboard', 'billing', 'pharmacy', 'reports'],
 };
+export const ROLES = [['admin', 'Administrator'], ['reception', 'Reception / records'], ['nurse', 'Nurse / midwife'], ['clinician', 'Clinical officer / doctor'],
+  ['lab', 'Lab technician'], ['pharmacist', 'Pharmacist'], ['cashier', 'Cashier']];
+export const TYPE_LABEL = { pharmacy: 'Pharmacy', clinic: 'Clinic', hospital: 'Hospital' };
 
 function useHash() {
   const [h, setH] = useState(window.location.hash.slice(2));
@@ -41,105 +46,135 @@ function useHash() {
 }
 
 export default function App() {
-  const [config, setConfig] = useState(undefined);
-  const [user, setU] = useState(getUser());
+  const [boot, setBoot] = useState(null);
+  const [session, setS] = useState(getSession());
+  const [branch, setB] = useState(getBranchId());
+  const [cfg, setCfg] = useState(null);
   const hash = useHash();
 
-  const loadConfig = () => api.get('/config').then(r => setConfig(r)).catch(() => setConfig({ config: null }));
-  useEffect(() => { loadConfig(); }, []);
+  useEffect(() => { api.get('/bootstrap').then(setBoot).catch(() => setBoot({ hasOrgs: true, types: {} })); }, []);
+  useEffect(() => onSessionExpired(() => { setS(null); setB(null); toast('Your session ended. Please sign in again.', true); }), []);
+  const login = s => {
+    setSession(s); setS(s);
+    const first = s.user.role === 'superadmin' ? null : (s.branch_id || s.branches[0]?.id || null);
+    setBranch(first); setB(first);
+    window.location.hash = first ? '#/' : '#/admin';
+  };
+  const logout = async () => { try { await api.post('/logout'); } catch {} setSession(null); setS(null); setB(null); setCfg(null); };
+  const chooseBranch = id => { setBranch(id); setB(id); setCfg(null); window.location.hash = '#/'; };
+  const refreshProfile = async () => { const p = await api.get('/me'); const s = { ...getSession(), ...p }; setSession(s); setS(s); };
+  const loadConfig = () => branch && api.get('/config').then(setCfg).catch(e => toast(e.message, true));
+  useEffect(() => { setCfg(null); if (session && branch) loadConfig(); }, [session?.token, branch]);
   useEffect(() => {
-    const c = config?.config;
-    if (c?.color) document.documentElement.style.setProperty('--brand', c.color);
+    const c = cfg?.config;
+    document.documentElement.style.setProperty('--brand', c?.color || '#0f766e');
     document.title = c ? `${c.facility_name} · MediCore` : 'Pentarch MediCore';
-  }, [config]);
+  }, [cfg]);
 
-  if (config === undefined) return <div className="empty">Loading…</div>;
-  if (!config.config || hash === 'setup') {
-    return <><Setup presets={config.presets} current={config.config} onDone={() => { setUser(null); setU(null); window.location.hash = '#/'; loadConfig(); }} /><Toaster /></>;
+  if (!boot) return <div className="empty">Loading…</div>;
+  if (!session) {
+    if (!boot.hasOrgs) return <><Onboard types={boot.types} first onDone={s => { setBoot({ ...boot, hasOrgs: true }); login(s); }} /><Toaster /></>;
+    return <><Login onLogin={login} /><Toaster /></>;
   }
-  if (!user) return <><Login cfg={config.config} onLogin={u => { setUser(u); setU(u); }} /><Toaster /></>;
+  const isSuper = session.user.role === 'superadmin';
+  if (isSuper && (!branch || hash === 'admin')) {
+    return <><Admin session={session} types={boot.types} onOpen={id => { refreshProfile(); chooseBranch(id); }} onLogout={logout} /><Toaster /></>;
+  }
+  if (!cfg) return <div className="empty">Opening facility…</div>;
 
-  const c = config.config;
+  const c = cfg.config;
+  const user = session.user;
   const allowed = p => ROLE_PAGES[user.role] === '*' || (ROLE_PAGES[user.role] || []).includes(p);
   const [page, id] = hash.split('/');
+  const many = session.branches.length > 1;
   const nav = [
     ['dashboard', 'Dashboard', 'dashboard'],
+    (['admin', 'superadmin'].includes(user.role) && !user.branch_id) && ['branches', many ? 'All branches' : 'Branches', 'branches'],
     ['patients', 'Patients', 'patients'],
     ['queue', c.type === 'pharmacy' ? 'Service queue' : 'OPD queue', 'queue'],
     ['appointments', 'Appointments', 'appointments'],
     c.lab !== 'none' && ['lab', 'Laboratory', 'lab'],
     c.imaging !== 'none' && ['imaging', 'Imaging', 'imaging'],
-    ['pharmacy', 'Pharmacy & stock', 'pharmacy'],
+    ['pharmacy', c.type === 'pharmacy' ? 'Pharmacy & stock' : 'Pharmacy & stores', 'pharmacy'],
     ['billing', 'Billing & checkout', 'billing'],
     c.admissions && ['wards', 'Wards & beds', 'wards'],
     c.maternity && ['maternity', 'Maternity', 'maternity'],
     ['referrals', 'Referrals', 'referrals'],
     ['reports', 'Reports', 'reports'],
     ['settings', 'Settings', 'settings'],
-  ].filter(Boolean).filter(([k]) => allowed(k));
-
+  ].filter(Boolean).filter(([k]) => k === 'branches' || allowed(k));
   const current = page || 'dashboard';
-  let body;
   const P = {
-    dashboard: <Dashboard />, patients: id ? <PatientView id={id} /> : <Patients />, queue: <Queue />,
-    visit: <Visit id={id} />, lab: <Lab />, imaging: <Imaging />, pharmacy: <Pharmacy />,
-    billing: <Billing openId={id} />, wards: <Wards />, maternity: <Maternity />, referrals: <Referrals />,
-    appointments: <Appointments />, reports: <Reports />, settings: <Settings reload={loadConfig} />
+    dashboard: <Dashboard />, branches: <Branches onOpen={chooseBranch} refreshProfile={refreshProfile} />,
+    patients: id ? <PatientView id={id} /> : <Patients />, queue: <Queue />, visit: <Visit id={id} />,
+    lab: <Lab />, imaging: <Imaging />, pharmacy: <Pharmacy />, billing: <Billing openId={id} />, wards: <Wards />,
+    maternity: <Maternity />, referrals: <Referrals />, appointments: <Appointments />, reports: <Reports />,
+    settings: <Settings reload={loadConfig} refreshProfile={refreshProfile} />,
   };
-  body = P[current] || <Dashboard />;
+  const pageAllowed = current === 'visit' ? allowed('queue') || allowed('patients') : current === 'branches' || allowed(current);
+  const initials = user.name.split(' ').filter(w => /^[A-Z]/.test(w) && !/\.$/.test(w)).slice(0, 2).map(w => w[0]).join('');
 
   return (
-    <ConfigContext.Provider value={{ ...c, user, reload: loadConfig }}>
+    <ConfigContext.Provider value={{ ...c, user, session, branch: cfg.branch, branches: session.branches, reload: loadConfig }}>
       <div className="app">
         <aside className="side">
-          <div className="brand"><Logo /><div><b>{c.facility_name}</b><small>Pentarch MediCore</small></div></div>
+          <div className="brand"><Logo /><div><b>{c.facility_name}</b><small>{TYPE_LABEL[c.type]} · Pentarch MediCore</small></div></div>
+          {(many || isSuper) && <div className="branch-switch">
+            <select value={branch} onChange={e => chooseBranch(Number(e.target.value))} aria-label="Switch branch">
+              {session.branches.map(b => <option key={b.id} value={b.id}>{b.name} · {TYPE_LABEL[b.type]}</option>)}
+            </select>
+          </div>}
           <nav className="nav">
-            {nav.map(([k, label, icon]) => (
-              <a key={k} href={'#/' + k} className={current === k || (k === 'queue' && current === 'visit') ? 'on' : ''}><Icon name={icon} />{label}</a>
-            ))}
+            {isSuper && <a href="#/admin"><Icon name="shield" />Pentarch console</a>}
+            {nav.map(([k, label, icon]) => <a key={k} href={'#/' + k} className={current === k || (k === 'queue' && current === 'visit') ? 'on' : ''}><Icon name={icon} />{label}</a>)}
             <div className="sep">Public</div>
-            <a href="/site" target="_blank" rel="noreferrer"><Icon name="globe" />Facility website</a>
+            <a href={'/site?b=' + branch} target="_blank" rel="noreferrer"><Icon name="globe" />Facility website</a>
           </nav>
           <div className="me">
-            <b>{user.name}</b>
-            <span style={{ textTransform: 'capitalize' }}>{user.role}</span>
-            <button className="sm" style={{ marginTop: 8, width: '100%', justifyContent: 'center' }} onClick={() => { setUser(null); setU(null); }}><Icon name="logout" size={14} />Switch user</button>
+            <span className="avatar">{initials || 'U'}</span>
+            <div style={{ minWidth: 0 }}><b>{user.name}</b><span style={{ textTransform: 'capitalize' }}>{user.role === 'superadmin' ? 'Pentarch super admin' : user.role}</span></div>
+            <button className="ghost sm right" style={{ color: '#cbd5e1' }} onClick={logout} title="Sign out" aria-label="Sign out"><Icon name="logout" size={16} /></button>
           </div>
         </aside>
-        <main className="main">{body}</main>
+        <main className="main">{pageAllowed ? (P[current] || <Dashboard />) : <div className="page"><div className="alert warn">Your role does not have access to this page. Ask the administrator if you need it.</div></div>}</main>
       </div>
       <Toaster />
     </ConfigContext.Provider>
   );
 }
 
-function Login({ cfg, onLogin }) {
-  const [users, setUsers] = useState([]);
+function Login({ onLogin }) {
+  const [list, setList] = useState(null);
   const [sel, setSel] = useState(null);
+  const [username, setUsername] = useState('');
   const [pin, setPin] = useState('');
-  useEffect(() => { api.get('/users').then(setUsers); }, []);
-  const go = async e => {
-    e.preventDefault();
-    const u = await act(() => api.post('/login', { username: sel.username, pin }));
-    onLogin(u);
-  };
+  const [manual, setManual] = useState(false);
+  useEffect(() => { api.get('/login-users').then(setList).catch(() => setList({ users: [] })); }, []);
+  const go = async e => { e.preventDefault(); onLogin(await act(() => api.post('/login', { username: sel ? sel.username : username, pin }))); };
+  const quick = list?.users?.length > 0 && !manual;
   return (
     <div className="setup">
-      <div className="box" style={{ width: 'min(640px,100%)' }}>
-        <div className="row" style={{ marginBottom: 18 }}><Logo size={20} /><div><h1>{cfg.facility_name}</h1><span className="muted">Pentarch MediCore · sign in</span></div></div>
+      <div className="box" style={{ width: 'min(680px,100%)' }}>
+        <div className="row" style={{ marginBottom: 20 }}><Logo size={20} /><div><h1>{list?.org?.name || 'Pentarch MediCore'}</h1><span className="muted">Sign in to continue</span></div></div>
         <div className="card">
-          <h3>Who is working?</h3>
-          <div className="grid g2">
-            {users.map(u => <button key={u.id} className={'choice' + (sel?.id === u.id ? ' on' : '')} onClick={() => { setSel(u); setPin(''); }}>
-              <b>{u.name}</b><span className="muted small" style={{ textTransform: 'capitalize' }}>{u.role}</span></button>)}
-          </div>
-          {sel && <form onSubmit={go} className="row mt">
-            <input type="password" inputMode="numeric" value={pin} onChange={e => setPin(e.target.value)} placeholder="PIN" autoFocus style={{ maxWidth: 160 }} />
-            <button className="primary">Sign in</button>
-            <span className="faint small">Demo PIN for every user: 1234</span>
+          {quick ? <>
+            <h3>Who is working?</h3>
+            <div className="grid g2">{list.users.map(u => <button key={u.id} className={'choice' + (sel?.id === u.id ? ' on' : '')} onClick={() => { setSel(u); setPin(''); }}>
+              <b>{u.name}</b><span className="muted small" style={{ textTransform: 'capitalize' }}>{u.role} · {u.username}</span></button>)}</div>
+            {sel && <form onSubmit={go} className="row mt">
+              <input type="password" inputMode="numeric" value={pin} onChange={e => setPin(e.target.value)} placeholder="Enter your PIN" autoFocus style={{ maxWidth: 200 }} />
+              <button className="primary">Sign in</button>
+            </form>}
+            <p className="faint small mt">Not listed? <a href="#" onClick={e => { e.preventDefault(); setManual(true); setSel(null); }}>Sign in with your username</a></p>
+          </> : <form onSubmit={go} className="stack">
+            <h3>Sign in</h3>
+            <label className="f"><span>Username</span><input value={username} onChange={e => setUsername(e.target.value)} autoFocus autoCapitalize="none" /></label>
+            <label className="f"><span>PIN</span><input type="password" inputMode="numeric" value={pin} onChange={e => setPin(e.target.value)} /></label>
+            <div className="row"><button className="primary" disabled={!username || !pin}>Sign in</button>
+              {list?.users?.length > 0 && <a href="#" onClick={e => { e.preventDefault(); setManual(false); }}>Pick from staff list</a>}</div>
           </form>}
         </div>
-        <p className="faint small mt">Demo build · data stays on this computer · <a href="#/setup">change facility setup</a></p>
+        <p className="faint small mt">Data stays on this computer. Sample staff PIN is 1234. Forgot your PIN? Ask your administrator to reset it.</p>
       </div>
     </div>
   );

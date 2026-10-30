@@ -1,55 +1,56 @@
 # Pentarch MediCore
 
-Offline-first health management system for Kenyan pharmacies, clinics and hospitals, with a linked public website for each facility.
+Offline-first health management system for Kenyan pharmacies, clinics and hospitals, with a public website for every facility.
 By **Pentarch Systems Solutions**.
 
-> **Demo build.** Everything works end to end on one computer and its local network. M-Pesa, KRA eTIMS, SHA claims, DHA/HIE and SMS are **simulated**; the live integrations and DHA certification come later.
+> **Demo build.** Everything works end to end on one computer and its local network. M-Pesa, KRA eTIMS, SHA claims, DHA/HIE and SMS are **simulated** and labelled "demo". The live integrations and DHA certification come later.
 
-## What it does
+## Install at a facility (Windows)
 
-- **Setup wizard**: choose Pharmacy, Clinic or Hospital; lab in-house / outsourced / both / none; imaging; procedures; maternity; admissions (bed count); automatic or manual billing; automatic or manual checkout. Modules switch on and off to match.
-- **Patients**: registration with duplicate check, SHA number, allergies, chronic conditions, consent.
-- **Patient dashboard**: health bars against normal reference ranges (green / amber / red), BP, glucose, weight and lab trend charts, pregnancy progress with fundal height chart, full timeline, results, medications, bills.
-- **Queue board**: triage → clinician → lab → pharmacy → cashier.
-- **Visit workspace**: vitals, clinical notes with diagnosis codes, lab orders (in-house or to a partner lab with printed requisition), imaging, prescriptions with allergy warning and auto quantities, procedures with consent and consumables, admit, refer.
-- **Laboratory**: worklist, sample collection, result entry with automatic flags, second-person validation, outside-lab results, test catalogue and prices.
-- **Pharmacy & stock**: dispensing (first-expiry-first-out), counter sale (POS) with prescription checks, batches and expiry, receive stock, stock take, controlled drugs register, website orders.
-- **Billing & checkout**: automatic or manual charges, cash / M-Pesa STK push / card / SHA / insurance, split payments, discounts with supervisor PIN, credit accounts, printable receipt.
-- **Wards & beds**: bed map, admit / transfer / discharge, nursing notes, daily bed charges, digital partograph with alert and action lines.
-- **Maternity**: ANC (8-contact model), deliveries, APGAR, low birth weight.
-- **Referrals**: in and out, auto-built clinical summary, printable note.
-- **Reports**: revenue, stock and expiry, reorder list, MOH 705A/705B (export for KHIS), MOH 711 indicators, lab workload, audit trail.
-- **Facility website** (`/site`): services and prices, lab tests, medicine shop with cart (prescription items reviewed by the pharmacist), online booking. Orders and bookings land in the system.
+1. On the **main computer only**, install **Node.js 22 LTS** (22.13 or newer) from nodejs.org.
+2. Download this repository (Code → Download ZIP), unzip to e.g. `C:\MediCore`.
+3. Double-click `start-medicore.bat`. The first run needs internet for a few minutes to install and build; after that it runs fully offline.
+4. The browser opens on the setup wizard: choose **Pharmacy, Clinic or Hospital**, tick the services, enter the facility and owner details, and choose **sample data** (demos/training) or **empty** (real use).
 
-## Run it (Windows)
+**Other PCs, tablets and phones do not need Node.js or any installation.** Connect them to the same Wi-Fi and open the address shown in the black console window, e.g. `http://192.168.1.20:4000` (also in Settings → Other devices). Reserve a fixed IP for the main computer in the router.
 
-1. Install **Node.js 22.13 or newer** from nodejs.org.
-2. Download this repository and double-click `start-medicore.bat`.
-3. The browser opens at `http://localhost:4000`. Pick a demo facility (SPENSA Pharmacy, TopCare Clinic or General hospital).
-4. Sign in as any user. **Demo PIN: 1234.**
+## Sign-in
 
-Other devices on the same Wi-Fi open the address shown in the console window (for example `http://192.168.1.20:4000`). The website is at `/site`.
+| Who | Username | PIN |
+| --- | --- | --- |
+| Pentarch super admin (sees every client) | `pentarch` | `2026` — change with the `MEDICORE_SUPER_PIN` environment variable |
+| Facility owner | chosen in the wizard | chosen in the wizard |
+| Sample staff (only when sample data is chosen) | e.g. `spensa.doctor`, `spensa.lab`, `spensa.cashier` | `1234` |
 
-## Run it (any OS)
+## What's inside
+
+- **Superadmin console**: every client organisation and branch, patients, collections, low stock; open any branch for support; create new facilities.
+- **Organisations and branches**: one owner, many branches of any type (pharmacy + clinic + hospital). Each branch keeps its own patients, stock and money; the **All branches** page combines what matters.
+- **Switch type without losing data**: Settings → Type & services changes modules and menus only.
+- **Patients** with health dashboards: health bars against reference ranges, BP, glucose, weight and lab trends, pregnancy tracking, full timeline.
+- **Triage** (Kenya ETAT+): danger-sign checklist sets Emergency / Priority / Queue; pain score; vitals with sanity checks; BMI, MUAC and fever flags. The queue is sorted by priority.
+- **Lab**: 62 tests in 8 departments with sex-specific ranges, quick panels (fever work-up, antenatal profile…), in-house or outside lab, second-person validation.
+- **Pharmacy and stock**: 265 items (Kenya Essential Medicines List groups, supplies, devices, lab reagents) with product pictures, pack sizes and loose selling. Selling 10 tablets from a box of 100 updates stock straight away ("12 boxes + 40 tabs"). First-expiry-first-out batches, receiving by pack, stock counts, controlled-drugs register, photo upload per item.
+- **Billing**: automatic or manual charges, cash / M-Pesa / card / SHA / insurance, discounts with supervisor PIN, credit, printable receipts.
+- **Wards, maternity, referrals, appointments, MOH 705/711 reports, audit trail.**
+- **Facility website** (`/site?b=<branch>`): shop by category with product pictures and cart, services, lab menu by department, booking. Orders and bookings land in the system.
+
+Prices are indicative Nairobi retail and editable per facility.
+
+## Going live with a real client
+
+1. Settings → Data → **Remove sample data** (keeps catalogue, prices and settings; sets stock to zero).
+2. Pharmacy → Inventory → **Receive stock** for what they actually hold.
+3. Add their staff under Settings → Staff & access.
+4. Back up the `data` folder weekly.
+
+## Development
 
 ```bash
-npm run setup   # install and build once
-npm start       # http://localhost:4000
+npm run setup       # install and build once
+npm start           # http://localhost:4000
+npm run dev:server  # API with auto-reload
+npm run dev:web     # Vite on 5173, proxied to the API
 ```
 
-Development: `npm run dev:server` and `npm run dev:web` (Vite on port 5173, proxied to the API).
-
-## How it is built
-
-- Node.js + Express server, built-in SQLite (`node:sqlite`), no native modules to compile
-- React + Vite front end, Recharts for charts
-- All data in one file: `data/medicore.db` (copy it to back up)
-- Re-running the setup wizard resets the demo data
-
-## Roadmap to a live product
-
-1. Real integrations: Safaricom Daraja (M-Pesa), KRA eTIMS (VSCU), SMS
-2. Cloud sync, backup and multi-branch owner dashboard; website served from the cloud
-3. SHA claims and DHA Health Information Exchange via AfyaConnect; DHA certification
-4. Hospital extras: theatre, HR, procurement, assets
-5. Windows installer and licensing
+Node.js + Express, built-in SQLite (`node:sqlite`, no native modules), React + Vite, Recharts. Data: `data/registry.db` (organisations, branches, users) and one database per branch in `data/branches/`.
