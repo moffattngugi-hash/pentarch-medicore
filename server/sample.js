@@ -140,12 +140,20 @@ function seedSample(D, cfg) {
       const pr = run(`INSERT INTO prescriptions(visit_id,patient_id,item_id,dose,frequency,days,qty,status,billed,prescriber,created_at,dispensed_at)
         VALUES(?,?,?,?,?,?,?,?,1,?,?,?)`, v, pid, it.id, dose, freq, days, qty, 'dispensed', 'Dr. Peter Maina', at, at).lastInsertRowid;
       line(bill, it.name, 'drug', 'prescriptions', pr, qty, it.price, at);
+      outMove(it.id, qty, 'dispense', 'RX-' + pr, at);
     }
     const tot = get('SELECT COALESCE(SUM(amount),0) t FROM bill_lines WHERE bill_id=?', bill).t;
     if (tot > 0) run('INSERT INTO payments(bill_id,method,amount,reference,by_user,created_at) VALUES(?,?,?,?,?,?)',
       bill, rnd() > 0.35 ? 'mpesa' : 'cash', tot, 'S' + Math.floor(rnd() * 1e9).toString(36).toUpperCase().padEnd(9, 'K'), 'Cashier Tom Odhiambo', at);
     return v;
   };
+  // stock leaves the oldest batch that still has enough, as a real sale would
+  function outMove(itemId, units, type, ref, at) {
+    const b = get('SELECT * FROM batches WHERE item_id=? AND qty>=? ORDER BY expiry LIMIT 1', itemId, units);
+    if (!b) return;
+    run('UPDATE batches SET qty=qty-? WHERE id=?', units, b.id);
+    run('INSERT INTO stock_moves(item_id,batch_id,qty,type,ref,by_user,created_at) VALUES(?,?,?,?,?,?,?)', itemId, b.id, -units, type, ref, 'system', at);
+  }
   function line(billId, desc, kind, refTable, refId, qty, price, at) {
     run('INSERT INTO bill_lines(bill_id,description,kind,ref_table,ref_id,qty,unit_price,amount,by_user,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
       billId, desc, kind, refTable, refId, qty, price, qty * price, 'system', at);
@@ -192,8 +200,8 @@ function seedSample(D, cfg) {
 
   // ---------- walk-in counter sales, last 14 days ----------
   const otc = ['PCM500', 'PANEX', 'CTZ10', 'ORS', 'VITC', 'IBU400', 'CONDOM', 'HCCR', 'OMP20', 'COFSYR', 'STREP', 'EC', 'ENO', 'MULTI', 'PLAST', 'PADS', 'CALPOL', 'BENYL', 'DETTOL', 'SANIT'];
-  for (let d = 13; d >= 0; d--) {
-    const n = 6 + Math.floor(rnd() * 8);
+  for (let d = 29; d >= 0; d--) {
+    const n = (cfg.type === 'pharmacy' ? 16 : 6) + Math.floor(rnd() * 14);
     for (let k = 0; k < n; k++) {
       const at = daysAgo(d, 8 + (k % 12));
       const b = run('INSERT INTO bills(patient_id,customer_name,payer,status,receipt_no,created_at,closed_at) VALUES(NULL,?,?,?,?,?,?)',
@@ -204,7 +212,8 @@ function seedSample(D, cfg) {
         const byPack = it.pack_size > 1 && rnd() < 0.3;
         const qty = it.sell_loose && !byPack ? Math.ceil(between(4, 20)) : 1;
         const price = byPack ? it.pack_price : it.price;
-        line(b, it.name + (byPack ? ` (1 ${it.pack_name})` : ''), 'drug', 'items', it.id, qty, price, at);
+        line(b, it.name + (byPack ? ` (${it.pack_name} of ${it.pack_size})` : ''), 'drug', 'items', it.id, qty, price, at);
+        outMove(it.id, byPack ? qty * it.pack_size : qty, 'sale', 'POS-' + b, at);
         tot += qty * price;
       }
       run('INSERT INTO payments(bill_id,method,amount,reference,by_user,created_at) VALUES(?,?,?,?,?,?)',
@@ -329,6 +338,25 @@ function seedSample(D, cfg) {
   };
   wo('Esther Muthoni', '0711222333', [['VITC', 30], ['ORS', 5], ['THERM', 1]], 'new', '');
   wo('Peter Gachanja', '0722888999', [['AMX500', 15], ['PCM500', 18]], 'awaiting_review', 'Dr. Njoroge, Mama Lucy Hospital, Rx 18832, 29 Oct');
+  // ---------- back office: customers, expenses, a closed shift, a purchase order ----------
+  for (const [n, ph, lim, pts] of [['Grace Wambui', '0712009988', 5000, 34], ['Kamau Hardware staff (account)', '0733445566', 20000, 120], ['Mama Zawadi', '0701112233', 0, 12]])
+    run('INSERT INTO customers(name,phone,credit_limit,points,created_at) VALUES(?,?,?,?,?)', n, ph, lim, pts, daysAgo(60));
+  // running costs sized to the sample's own takings, so the demo shows a believable margin
+  const rev30 = get('SELECT COALESCE(SUM(amount),0) a FROM payments WHERE created_at>=?', daysAgo(30)).a || 100000;
+  const r = f => Math.round(rev30 * f / 50) * 50;
+  const exps = [[28, 'Rent', 'Monthly rent', r(0.1), 'bank'], [27, 'Salaries and wages', 'Staff salaries', r(0.18), 'bank'],
+    [20, 'Electricity and water', 'KPLC tokens', r(0.02), 'mpesa'], [18, 'Internet and phone', 'Safaricom Home Fibre', 4100, 'mpesa'],
+    [12, 'Transport and delivery', 'Boda deliveries (week)', 1800, 'cash'], [9, 'Cleaning and supplies', 'Cleaning materials', 1250, 'cash'],
+    [5, 'Bank and M-Pesa charges', 'Till charges', r(0.004), 'mpesa'], [2, 'Repairs and maintenance', 'Fridge thermostat repair', 2500, 'cash']];
+  for (const [d, cat, desc, amt, m] of exps) run('INSERT INTO expenses(date,category,description,amount,method,by_user,created_at) VALUES(?,?,?,?,?,?,?)', addDays(now(), -d), cat, desc, amt, m, 'Jane (owner)', daysAgo(d));
+  const y = daysAgo(1, 8), yEnd = daysAgo(1, 21);
+  const sh = run("INSERT INTO shifts(user,opened_at,opening_float,status) VALUES(?,?,?,'open')", 'Cashier Tom Odhiambo', y, 2000).lastInsertRowid;
+  run("UPDATE payments SET shift_id=? WHERE by_user='Cashier Tom Odhiambo' AND created_at BETWEEN ? AND ?", sh, y.slice(0, 10), yEnd);
+  const cashY = get("SELECT COALESCE(SUM(amount),0) a FROM payments WHERE method='cash' AND shift_id=?", sh).a;
+  run("UPDATE shifts SET closed_at=?, counted_cash=?, expected_cash=?, variance=-50, notes=?, status='closed' WHERE id=?", yEnd, 2000 + cashY - 50, 2000 + cashY, 'Short KES 50: change given twice to one customer', sh);
+  const sup = 'Dawa Ltd';
+  const po = run("INSERT INTO purchase_orders(po_no,supplier,status,notes,created_by,created_at,sent_at) VALUES('PO00001',?,'sent','Weekly order',?,?,?)", sup, 'Pharm. Lucy Njeri', daysAgo(1), daysAgo(1)).lastInsertRowid;
+  for (const code of ['SALB', 'AUG625', 'CEFTR1']) { const it = item(code); if (it) run('INSERT INTO po_lines(po_id,item_id,packs,pack_cost) VALUES(?,?,?,?)', po, it.id, 4, Math.round(it.cost * it.pack_size)); }
 }
 
 module.exports = { seedSample };

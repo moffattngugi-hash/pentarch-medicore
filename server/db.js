@@ -25,6 +25,11 @@ CREATE TABLE IF NOT EXISTS orgs (id INTEGER PRIMARY KEY, name TEXT, owner_name T
 CREATE TABLE IF NOT EXISTS branches (id INTEGER PRIMARY KEY, org_id INTEGER, name TEXT, type TEXT, db_file TEXT, sample INTEGER DEFAULT 0, created_at TEXT);
 CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, org_id INTEGER, branch_id INTEGER, name TEXT, username TEXT UNIQUE, pin_hash TEXT, role TEXT, active INTEGER DEFAULT 1, created_at TEXT);
 CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, user_id INTEGER, created_at TEXT);
+CREATE TABLE IF NOT EXISTS transfers (
+  id INTEGER PRIMARY KEY, org_id INTEGER, from_branch INTEGER, to_branch INTEGER, status TEXT, lines TEXT, notes TEXT,
+  created_by TEXT, created_at TEXT, received_by TEXT, received_at TEXT);
+CREATE TABLE IF NOT EXISTS licences (
+  id INTEGER PRIMARY KEY, org_id INTEGER, plan TEXT, status TEXT, trial_ends TEXT, paid_until TEXT, key TEXT, notes TEXT, updated_at TEXT);
 `);
 const R = {
   all: (sql, ...p) => reg.prepare(sql).all(...clean(p)),
@@ -123,7 +128,42 @@ CREATE TABLE IF NOT EXISTS web_orders (
   id INTEGER PRIMARY KEY, name TEXT, phone TEXT, items TEXT, total REAL, delivery TEXT,
   prescription_note TEXT, status TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY, user TEXT, action TEXT, entity TEXT, entity_id INTEGER, created_at TEXT);
+CREATE TABLE IF NOT EXISTS shifts (
+  id INTEGER PRIMARY KEY, user TEXT, user_id INTEGER, opened_at TEXT, opening_float REAL, closed_at TEXT,
+  counted_cash REAL, expected_cash REAL, variance REAL, notes TEXT, status TEXT);
+CREATE TABLE IF NOT EXISTS refunds (
+  id INTEGER PRIMARY KEY, bill_id INTEGER, refund_no TEXT, amount REAL, method TEXT, reason TEXT, restock INTEGER,
+  lines TEXT, by_user TEXT, approved_by TEXT, created_at TEXT);
+CREATE TABLE IF NOT EXISTS purchase_orders (
+  id INTEGER PRIMARY KEY, po_no TEXT, supplier TEXT, status TEXT, notes TEXT, expected TEXT,
+  created_by TEXT, created_at TEXT, sent_at TEXT, closed_at TEXT);
+CREATE TABLE IF NOT EXISTS po_lines (id INTEGER PRIMARY KEY, po_id INTEGER, item_id INTEGER, packs REAL, pack_cost REAL, received REAL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS expenses (
+  id INTEGER PRIMARY KEY, date TEXT, category TEXT, description TEXT, amount REAL, method TEXT, reference TEXT,
+  shift_id INTEGER, by_user TEXT, created_at TEXT);
+CREATE TABLE IF NOT EXISTS customers (
+  id INTEGER PRIMARY KEY, name TEXT, phone TEXT UNIQUE, credit_limit REAL DEFAULT 0, points REAL DEFAULT 0, notes TEXT, created_at TEXT);
+CREATE INDEX IF NOT EXISTS ix_batches_item ON batches(item_id, expiry);
+CREATE INDEX IF NOT EXISTS ix_moves_item ON stock_moves(item_id, created_at);
+CREATE INDEX IF NOT EXISTS ix_moves_ref ON stock_moves(ref);
+CREATE INDEX IF NOT EXISTS ix_lines_bill ON bill_lines(bill_id);
+CREATE INDEX IF NOT EXISTS ix_pay_bill ON payments(bill_id);
+CREATE INDEX IF NOT EXISTS ix_pay_date ON payments(created_at);
+CREATE INDEX IF NOT EXISTS ix_visits_status ON visits(status);
+CREATE INDEX IF NOT EXISTS ix_lab_status ON lab_orders(status);
+CREATE INDEX IF NOT EXISTS ix_items_barcode ON items(barcode);
 `;
+// Columns added after the first release: added to older databases on open
+const ADDED_COLUMNS = [
+  ['payments', 'shift_id', 'INTEGER'], ['bills', 'customer_id', 'INTEGER'], ['bills', 'customer_phone', 'TEXT'],
+  ['items', 'gtin', 'TEXT'], ['items', 'location', 'TEXT'], ['batches', 'po_id', 'INTEGER'],
+];
+function migrate(d) {
+  for (const [t, c, type] of ADDED_COLUMNS) {
+    const cols = d.prepare(`PRAGMA table_info(${t})`).all().map(r => r.name);
+    if (!cols.includes(c)) d.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${type}`);
+  }
+}
 
 const open = {};
 let db = null;           // the branch database the current request works on
@@ -134,6 +174,7 @@ function openBranch(branchId) {
     const d = new DatabaseSync(dbFile(branchId));
     d.exec('PRAGMA journal_mode = WAL;');
     d.exec(SCHEMA);
+    migrate(d);
     open[branchId] = d;
   }
   return open[branchId];
@@ -233,7 +274,8 @@ function createBranchDb(branchId, cfg, sample) {
 function clearSample({ zeroStock = true } = {}) {
   tx(() => {
     for (const t of ['patients', 'visits', 'vitals', 'notes', 'lab_orders', 'imaging_orders', 'prescriptions', 'procedures', 'bills', 'bill_lines',
-      'payments', 'admissions', 'nursing_notes', 'partograph', 'pregnancies', 'anc_visits', 'deliveries', 'referrals', 'appointments', 'web_orders', 'audit']) run(`DELETE FROM ${t}`);
+      'payments', 'admissions', 'nursing_notes', 'partograph', 'pregnancies', 'anc_visits', 'deliveries', 'referrals', 'appointments', 'web_orders', 'audit',
+      'shifts', 'refunds', 'purchase_orders', 'po_lines', 'expenses', 'customers']) run(`DELETE FROM ${t}`);
     if (zeroStock) { run('DELETE FROM batches'); run('DELETE FROM stock_moves'); }
   });
   R.run('UPDATE branches SET sample=0 WHERE id=?', currentBranch);

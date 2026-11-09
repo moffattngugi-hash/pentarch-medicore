@@ -129,6 +129,10 @@ export function FlagBadge({ flag }) {
 }
 
 const ICONS = {
+  scan: 'M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2M7 8v8M10 8v8M13 8v8M16 8v8',
+  undo: 'M9 14L4 9l5-5M4 9h11a5 5 0 0 1 0 10h-3',
+  truck: 'M3 7h11v9H3zM14 10h4l3 3v3h-7M7 19a2 2 0 1 0 0-.01M17 19a2 2 0 1 0 0-.01',
+  tag: 'M20 12l-8 8-9-9V3h8zM7.5 7.5h.01',
   chev: 'M9 6l6 6-6 6',
   trend: 'M3 17l6-6 4 4 8-8M15 7h6v6',
   dashboard: 'M3 3h7v9H3zM14 3h7v5h-7zM14 12h7v9h-7zM3 16h7v5H3z',

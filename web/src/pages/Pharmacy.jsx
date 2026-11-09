@@ -1,9 +1,13 @@
-import React, { useContext, useMemo, useRef, useState } from 'react';
+import React, { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
 import { ConfigContext } from '../App';
 import { useData, Modal, Field, Tabs, StatusBadge, Badge, act, money, fmtDate, fmtDT, fmtQty, Empty, todayISO, PageHead, Tip, Icon, Stat } from '../ui';
 import { PayPanel, Receipt } from './Billing';
 import ProductArt from '../shared/ProductArt';
+import { ShiftBar, CustomerPicker, RefundDialog } from './Cash';
+import { PurchaseOrders, Transfers, Labels } from './Stock';
+import { Barcode, parseGS1, looksLikeCode } from '../shared/barcode';
+import { toast } from '../ui';
 
 const pl = (w, n) => n === 1 ? w : /(x|s|ch|sh)$/.test(w) ? w + 'es' : w + 's';
 
@@ -16,10 +20,14 @@ export default function Pharmacy() {
   return (
     <div className="page">
       <PageHead icon="pharmacy" title={c.type === 'pharmacy' ? 'Pharmacy & stock' : 'Pharmacy & stores'} sub="Stock is counted in single pieces. Selling 10 tablets from a box of 100 updates stock straight away." />
-      <Tabs value={tab} onChange={setTab} tabs={[['dispense', `Prescriptions (${(queue || []).length})`], ['pos', 'Counter sale'], ['inventory', 'Inventory'], ['web', `Website orders${newOrders ? ` (${newOrders})` : ''}`], ['controlled', 'Controlled drugs register']]} />
+      <Tabs value={tab} onChange={setTab} tabs={[['dispense', `Prescriptions (${(queue || []).length})`], ['pos', 'Counter sale'], ['inventory', 'Inventory'], ['po', 'Purchase orders'],
+        (c.branches || []).length > 1 && ['transfers', 'Transfers'], ['labels', 'Barcode labels'], ['web', `Website orders${newOrders ? ` (${newOrders})` : ''}`], ['controlled', 'Controlled drugs']]} />
       {tab === 'dispense' && <Dispense queue={queue} reload={reloadQ} />}
       {tab === 'pos' && <POS />}
       {tab === 'inventory' && <Inventory />}
+      {tab === 'po' && <PurchaseOrders />}
+      {tab === 'transfers' && <Transfers />}
+      {tab === 'labels' && <Labels />}
       {tab === 'web' && <WebOrders orders={orders} reload={reloadO} />}
       {tab === 'controlled' && <Controlled />}
     </div>
@@ -64,34 +72,66 @@ function useCategories(items) {
 }
 
 function POS() {
+  const c = useContext(ConfigContext);
   const [items, reloadItems] = useData('/items');
   const [q, setQ] = useState('');
   const [cat, setCat] = useState('All');
   const [cart, setCart] = useState([]);
-  const [customer, setCustomer] = useState('');
+  const [cust, setCust] = useState(null);
   const [paying, setPaying] = useState(false);
   const [receipt, setReceipt] = useState(null);
+  const [refund, setRefund] = useState(false);
+  const [tick, setTick] = useState(0);
+  const searchRef = useRef();
   const cats = useCategories(items);
   const results = useMemo(() => (items || []).filter(i => i.category !== 'reagent' && (cat === 'All' || i.shop_cat === cat) &&
     (i.name.toLowerCase().includes(q.toLowerCase()) || (i.code || '').toLowerCase().includes(q.toLowerCase()) || (i.barcode || '') === q)).slice(0, 40), [items, q, cat]);
   const priceOf = l => l.mode === 'pack' ? l.item.pack_price : l.item.price;
   const baseOf = l => l.mode === 'pack' ? l.qty * l.item.pack_size : l.qty;
-  const add = it => setCart(c => {
-    const mode = it.pack_size > 1 && !it.sell_loose ? 'pack' : 'unit';
-    const ex = c.find(x => x.item.id === it.id && x.mode === mode);
-    return ex ? c.map(x => x === ex ? { ...x, qty: x.qty + 1 } : x) : [...c, { item: it, qty: 1, mode, rx_ref: '' }];
-  });
+  const add = (it, mode0) => {
+    if (it.stock <= 0) return toast(`${it.name} is out of stock`, true);
+    setCart(c => {
+      const mode = mode0 || (it.pack_size > 1 && !it.sell_loose ? 'pack' : 'unit');
+      const ex = c.find(x => x.item.id === it.id && x.mode === mode);
+      return ex ? c.map(x => x === ex ? { ...x, qty: x.qty + 1 } : x) : [...c, { item: it, qty: 1, mode, rx_ref: '' }];
+    });
+  };
+  // a barcode scanner types the code and presses Enter
+  const onEnter = async e => {
+    if (e.key !== 'Enter') return;
+    const t = q.trim();
+    if (!t) return;
+    if (looksLikeCode(t) || parseGS1(t)) {
+      const r = await api.get('/items/by-code/' + encodeURIComponent(t)).catch(() => null);
+      if (r?.item) { const it = (items || []).find(i => i.id === r.item.id) || r.item; add(it, it.pack_size > 1 && !parseGS1(t) && !it.sell_loose ? 'pack' : (parseGS1(t) ? 'pack' : undefined)); setQ(''); return; }
+      toast(`No item has barcode ${t}. Link it from Inventory → item → Barcode.`, true); setQ(''); return;
+    }
+    if (results.length === 1) { add(results[0]); setQ(''); }
+  };
+  useEffect(() => {
+    const k = e => {
+      if (e.key === 'F2') { e.preventDefault(); searchRef.current?.focus(); }
+      if (e.key === 'F9' && cart.length) { e.preventDefault(); setPaying(true); }
+    };
+    window.addEventListener('keydown', k); return () => window.removeEventListener('keydown', k);
+  }, [cart.length]);
   const total = cart.reduce((a, l) => a + l.qty * priceOf(l), 0);
   const needsRx = cart.some(l => l.item.rx_only && !l.rx_ref);
   const short = cart.find(l => baseOf(l) > l.item.stock);
+  const credit = cust && cust.credit_limit > 0 ? Math.max(0, cust.credit_limit - (cust.owed || 0)) : 0;
   const finish = async p => {
-    const r = await act(() => api.post('/pos/sale', { customer: customer || 'Walk-in customer', lines: cart.map(l => ({ item_id: l.item.id, qty: l.qty, mode: l.mode, rx_ref: l.rx_ref })), payments: [p] }), 'Sale complete');
-    setCart([]); setCustomer(''); setPaying(false); setReceipt(r); reloadItems();
+    const r = await act(() => api.post('/pos/sale', { customer_id: cust?.id, customer: cust?.name || 'Walk-in customer', lines: cart.map(l => ({ item_id: l.item.id, qty: l.qty, mode: l.mode, rx_ref: l.rx_ref })), payments: p ? [p] : [] }), p ? 'Sale complete' : 'Sale put on account');
+    setCart([]); setCust(null); setPaying(false); setReceipt(r); reloadItems(); setTick(t => t + 1); searchRef.current?.focus();
   };
-  return <div className="grid g-side">
+  return <div className="stack">
+    <ShiftBar refreshKey={tick} />
+    <div className="grid g-side">
     <div className="stack">
-      <input value={q} onChange={e => setQ(e.target.value)} placeholder="Scan barcode or search medicine, supply or device…" autoFocus style={{ fontSize: 15, padding: 12 }} />
-    <div className="row" style={{ gap: 5 }}>{cats.map(x => <button key={x} className={'sm' + (cat === x ? ' primary' : '')} onClick={() => setCat(x)}>{x}</button>)}</div>
+      <div className="row" style={{ flexWrap: 'nowrap' }}>
+        <div className="scanbox"><Icon name="scan" size={18} /><input ref={searchRef} value={q} onChange={e => setQ(e.target.value)} onKeyDown={onEnter} placeholder="Scan a barcode or type a name, then Enter" autoFocus /></div>
+        <button onClick={() => setRefund(true)} title="Return an item and refund"><Icon name="undo" size={15} />Return</button>
+      </div>
+      <div className="row" style={{ gap: 5 }}>{cats.map(x => <button key={x} className={'sm' + (cat === x ? ' primary' : '')} onClick={() => setCat(x)}>{x}</button>)}</div>
       <div className="pgrid">{results.map(i => <button key={i.id} type="button" className={'pcard' + (i.stock <= 0 ? ' out' : '')} disabled={i.stock <= 0} onClick={() => add(i)}>
         <div className="art"><ProductArt item={i} size={110} /></div>
         <span className="nm">{i.name}</span>
@@ -101,27 +141,32 @@ function POS() {
       </button>)}</div>
       {items && !results.length && <Empty icon="search">Nothing matches “{q}”.</Empty>}
     </div>
-    <div className="card stack" style={{ position: 'sticky', top: 16, alignSelf: 'start' }}>
-      <div className="row"><h3 style={{ margin: 0 }}>Cart</h3><span className="faint small right">{cart.length} line{cart.length === 1 ? '' : 's'}</span></div>
-      <Field label="Customer name (optional)"><input value={customer} onChange={e => setCustomer(e.target.value)} placeholder="Walk-in customer" /></Field>
+    <div className="card stack cart" style={{ position: 'sticky', top: 16, alignSelf: 'start' }}>
+      <div className="row"><h3 style={{ margin: 0 }}>Cart</h3><span className="faint small right">{cart.reduce((a, l) => a + l.qty, 0)} item{cart.length === 1 ? '' : 's'} · <kbd>F2</kbd> search · <kbd>F9</kbd> pay</span></div>
+      <CustomerPicker value={cust} onChange={setCust} />
       {cart.map((l, i) => <div key={i} className="stack" style={{ gap: 6, borderBottom: '1px solid var(--line)', paddingBottom: 10 }}>
         <div className="row" style={{ flexWrap: 'nowrap' }}><ProductArt item={l.item} size={40} rounded={8} /><b className="small" style={{ flex: 1 }}>{l.item.name}</b><button className="ghost sm" onClick={() => setCart(cart.filter((_, j) => j !== i))} aria-label="Remove">✕</button></div>
         <div className="row small">
           {l.item.pack_size > 1 && <div className="seg">
             {l.item.sell_loose ? <button className={l.mode === 'unit' ? 'on' : ''} onClick={() => setCart(cart.map((x, j) => j === i ? { ...x, mode: 'unit' } : x))}>{pl(l.item.unit, 2)}</button> : null}
             <button className={l.mode === 'pack' ? 'on' : ''} onClick={() => setCart(cart.map((x, j) => j === i ? { ...x, mode: 'pack' } : x))}>{pl(l.item.pack_name, 2)} of {l.item.pack_size}</button></div>}
-          <input type="number" min="1" value={l.qty} style={{ width: 74 }} onChange={e => setCart(cart.map((x, j) => j === i ? { ...x, qty: Math.max(1, Number(e.target.value)) } : x))} />
+          <div className="stepper"><button onClick={() => setCart(cart.map((x, j) => j === i ? { ...x, qty: Math.max(1, x.qty - 1) } : x))}>−</button>
+            <input type="number" min="1" value={l.qty} onChange={e => setCart(cart.map((x, j) => j === i ? { ...x, qty: Math.max(1, Number(e.target.value)) } : x))} />
+            <button onClick={() => setCart(cart.map((x, j) => j === i ? { ...x, qty: x.qty + 1 } : x))}>+</button></div>
           <span className="muted">× {money(priceOf(l))}</span><b className="right">{money(l.qty * priceOf(l))}</b></div>
         {baseOf(l) > l.item.stock && <span className="small" style={{ color: 'var(--bad)' }}>Only {l.item.stock_text} in stock</span>}
         {l.item.rx_only ? <input placeholder="Prescription-only: prescriber name or Rx number" value={l.rx_ref} onChange={e => setCart(cart.map((x, j) => j === i ? { ...x, rx_ref: e.target.value } : x))} style={{ borderColor: l.rx_ref ? null : '#f59e0b' }} /> : null}
       </div>)}
-      {!cart.length && <Empty icon="pharmacy">Tap a product to add it.</Empty>}
-      <div className="row" style={{ fontSize: 20 }}><b>Total</b><b className="right">{money(total)}</b></div>
+      {!cart.length && <Empty icon="scan">Scan an item or tap a product to add it.</Empty>}
+      <div className="row" style={{ fontSize: 22 }}><b>Total</b><b className="right">{money(total)}</b></div>
       {needsRx && <div className="alert warn small">Record the prescription for each Rx-only item before selling.</div>}
-      <button className="primary" style={{ justifyContent: 'center', padding: 12 }} disabled={!cart.length || needsRx || !!short} onClick={() => setPaying(true)}>Take payment</button>
+      <button className="primary big" disabled={!cart.length || needsRx || !!short} onClick={() => setPaying(true)}>Take payment {cart.length ? money(total) : ''}</button>
+      {cust && credit > 0 && cart.length > 0 && <button disabled={total > credit || needsRx || !!short} onClick={() => finish(null)}>Put on {cust.name.split(' ')[0]}'s account (up to {money(credit)})</button>}
     </div>
-    {paying && <Modal title={`Payment · ${money(total)}`} onClose={() => setPaying(false)}><PayPanel balance={total} onPay={finish} /></Modal>}
-    {receipt && <Receipt bill={receipt} onClose={() => setReceipt(null)} />}
+    </div>
+    {paying && <Modal title={`Payment · ${money(total)}`} onClose={() => setPaying(false)}><PayPanel balance={total} phone={cust?.phone} onPay={finish} /></Modal>}
+    {receipt && <Receipt bill={receipt} onClose={() => { setReceipt(null); searchRef.current?.focus(); }} />}
+    {refund && <RefundDialog onClose={() => setRefund(false)} onDone={() => { setRefund(false); reloadItems(); setTick(t => t + 1); }} />}
   </div>;
 }
 
@@ -213,6 +258,7 @@ function ItemDetail({ id, onClose, onReceive }) {
           <div><div className="faint small">Selling price</div><b>{money(it.pack_price)}</b>{it.pack_size > 1 && <div className="small">{money(it.price)} per {it.unit}</div>}<div className="faint small">Cost {money(it.cost * it.pack_size)} · margin {it.pack_price ? Math.round((1 - it.cost * it.pack_size / it.pack_price) * 100) : 0}%</div></div>
         </div>
         {it.description && <p className="small muted">{it.description}</p>}
+        <BarcodeBox item={it} onChange={reload} />
         <div><button className="sm" onClick={() => setEdit({ ...it })}>Edit prices and settings</button></div>
       </div>
     </div>
@@ -222,7 +268,6 @@ function ItemDetail({ id, onClose, onReceive }) {
         {it.pack_size > 1 && <Field label={`Price per ${it.unit} (loose)`}><input type="number" value={edit.price} onChange={e => setEdit({ ...edit, price: e.target.value })} /></Field>}
         <Field label={`Cost per ${it.unit}`}><input type="number" value={edit.cost} onChange={e => setEdit({ ...edit, cost: e.target.value })} /></Field>
         <Field label={`Reorder level (${pl(it.unit, 2)})`}><input type="number" value={edit.reorder_level} onChange={e => setEdit({ ...edit, reorder_level: e.target.value })} /></Field>
-        <Field label="Barcode"><input value={edit.barcode || ''} onChange={e => setEdit({ ...edit, barcode: e.target.value })} /></Field>
         <Field label="Description (shown on website)" span={3}><input value={edit.description || ''} onChange={e => setEdit({ ...edit, description: e.target.value })} /></Field></div>
       <div className="row"><label className="check"><input type="checkbox" checked={!!edit.rx_only} onChange={e => setEdit({ ...edit, rx_only: e.target.checked })} />Prescription only</label>
         <label className="check"><input type="checkbox" checked={!!edit.controlled} onChange={e => setEdit({ ...edit, controlled: e.target.checked })} />Controlled (DDA register)</label>
@@ -250,10 +295,13 @@ function ReceiveStock({ items, initial, onClose, onDone }) {
   const [q, setQ] = useState('');
   const it = items.find(i => i.id === f.item_id);
   const total = it ? (Number(f.packs) || 0) * it.pack_size + (Number(f.loose) || 0) : 0;
-  const save = async () => { const r = await act(() => api.post('/stock/receive', f)); onDone(); alert(`Received ${r.received} of ${it.name}.`); };
+  const save = async () => { const r = await act(() => api.post('/stock/receive', f)); onDone(); toast(`Received ${r.received} of ${it.name}`); };
   const matches = q.length > 1 ? items.filter(i => i.name.toLowerCase().includes(q.toLowerCase())).slice(0, 8) : [];
   return <Modal wide title="Receive stock (goods received note)" onClose={onClose} footer={<><button onClick={onClose}>Cancel</button><button className="primary" disabled={!it || !total || !f.expiry} onClick={save}>Receive {it && total ? fmtQty(it, total) : ''}</button></>}>
-    {!it ? <div style={{ position: 'relative' }}><Field label="Item"><input autoFocus value={q} onChange={e => setQ(e.target.value)} placeholder="Search the item you received" /></Field>
+    {!it ? <div style={{ position: 'relative' }}><Field label="Item" hint="Scan the pack: the 2D code also fills in batch and expiry"><input autoFocus value={q} onChange={e => setQ(e.target.value)} placeholder="Scan the pack or search the item you received"
+      onKeyDown={async e => { if (e.key !== 'Enter' || !q.trim()) return; const r = await api.get('/items/by-code/' + encodeURIComponent(q.trim())).catch(() => null);
+        if (r?.item) { setF({ ...f, item_id: r.item.id, pack_cost: Math.round(r.item.cost * r.item.pack_size), ...(r.gs1?.batch ? { batch_no: r.gs1.batch } : {}), ...(r.gs1?.expiry ? { expiry: r.gs1.expiry } : {}) }); if (r.gs1) toast('Item, batch and expiry read from the pack'); }
+        else toast('No item has that barcode yet. Search by name, then link the barcode on the item.', true); setQ(''); }} /></Field>
       {matches.length > 0 && <div className="dropdown">{matches.map(i => <button key={i.id} className="dd-item" onClick={() => setF({ ...f, item_id: i.id, pack_cost: Math.round(i.cost * i.pack_size) })}><ProductArt item={i} size={34} rounded={7} /><span>{i.name} <span className="faint small">· {i.stock_text} in stock</span></span></button>)}</div>}</div>
       : <div className="row" style={{ flexWrap: 'nowrap' }}><ProductArt item={it} size={64} /><div><b>{it.name}</b><div className="small muted">Pack: {it.pack_size > 1 ? `${it.pack_name} of ${it.pack_size} ${pl(it.unit, it.pack_size)}` : it.unit} · in stock {it.stock_text}</div></div>{!initial.item_id && <button className="sm right" onClick={() => setF({ ...f, item_id: null })}>Change</button>}</div>}
     {it && <div className="fields mt">
@@ -347,4 +395,15 @@ function StockValue({ items, onClose }) {
     <h4 className="mt">Ten items holding the most money</h4>
     <table className="table"><tbody>{top.map(i => <tr key={i.id}><td><div className="row" style={{ flexWrap: 'nowrap' }}><ProductArt item={i} size={32} rounded={8} /><b>{i.name}</b></div></td><td className="small">{i.stock_text}</td><td className="num">{money(i.stock * (i.cost || 0))}</td></tr>)}</tbody></table>
   </Modal>;
+}
+
+// Link the barcode printed on the box, or create a shop barcode
+function BarcodeBox({ item, onChange }) {
+  const [scan, setScan] = useState(false);
+  const save = async body => { await act(() => api.post(`/items/${item.id}/barcode`, body), 'Barcode saved'); setScan(false); onChange(); };
+  return <div className="barcodebox">
+    {item.barcode ? <><Barcode value={item.barcode} height={38} /><div className="stack" style={{ gap: 4 }}><span className="small faint">Scans at the till and on receiving</span><button className="sm" onClick={() => setScan(true)}>Change</button></div></>
+      : <><span className="small muted">No barcode yet.</span><button className="sm" onClick={() => setScan(true)}><Icon name="scan" size={14} />Link barcode</button><button className="sm" onClick={() => save({ generate: true })}>Create shop barcode</button></>}
+    {scan && <input autoFocus placeholder="Scan the box now (or type the number) and press Enter" onKeyDown={e => e.key === 'Enter' && e.target.value.trim() && save({ barcode: e.target.value.trim() })} onBlur={() => setScan(false)} />}
+  </div>;
 }

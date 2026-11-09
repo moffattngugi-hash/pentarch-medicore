@@ -43,11 +43,15 @@ function Facility({ reload, refreshProfile }) {
       <Field label="KMHFR facility code"><input value={f.kmhfr || ''} onChange={e => set('kmhfr', e.target.value)} /></Field>
       <Field label="KRA PIN"><input value={f.kra_pin || ''} onChange={e => set('kra_pin', e.target.value)} /></Field>
       <Field label="Brand colour"><input type="color" value={f.color || '#0f766e'} onChange={e => set('color', e.target.value)} style={{ height: 40, padding: 3 }} /></Field>
+      <Field label="M-Pesa Till number" hint="Printed on receipts"><input value={f.till || ''} onChange={e => set('till', e.target.value)} placeholder="e.g. 5123456" /></Field>
+      <Field label="M-Pesa Paybill and account"><input value={f.paybill || ''} onChange={e => set('paybill', e.target.value)} placeholder="e.g. 247247 · Acc 0712345678" /></Field>
+      <Field label="Receipt footer" span={2}><input value={f.receipt_footer || ''} onChange={e => set('receipt_footer', e.target.value)} placeholder="e.g. Goods once sold are not returnable unless faulty. Get well soon!" /></Field>
     </div>
     <Field label="Partner labs, imaging centres and referral hospitals (one per line)"><textarea value={f.partners} onChange={e => set('partners', e.target.value)} /></Field>
     <div className="row" style={{ gap: 18 }}>
       <label className="check"><input type="checkbox" checked={!!f.auto_checkout} onChange={e => set('auto_checkout', e.target.checked)} />Close the visit automatically once the bill is fully paid</label>
       <label className="check"><input type="checkbox" checked={f.web_shop !== false} onChange={e => set('web_shop', e.target.checked)} />Medicine shop on the website</label>
+      <label className="check"><input type="checkbox" checked={!!f.require_shift} onChange={e => set('require_shift', e.target.checked)} />Cashiers must open a shift (cash drawer) before selling</label>
     </div>
     <div><button className="primary" onClick={save}>Save details</button></div>
   </div>;

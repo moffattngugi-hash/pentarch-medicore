@@ -15,14 +15,16 @@ function csv(name, rows) {
 
 export default function Reports() {
   const c = useContext(ConfigContext);
-  const [tab, setTab] = useState('finance');
+  const [tab, setTab] = useState('profit');
   return (
     <div className="page">
       <div className="pagehead"><div><h1>Reports</h1><p className="sub">Management reports and MOH monthly summaries, generated from what staff already recorded.</p></div>
         <div className="actions"><button onClick={() => window.print()}><Icon name="print" size={15} />Print</button></div></div>
-      <Tabs value={tab} onChange={setTab} tabs={[['finance', 'Revenue'], ['stock', 'Stock'], ['moh705', 'MOH 705 (OPD morbidity)'], c.type !== 'pharmacy' && ['moh711', 'MOH 711 / service summary'], c.lab !== 'none' && ['lab', 'Lab workload'], ['audit', 'Audit trail']]} />
+      <Tabs value={tab} onChange={setTab} tabs={[['profit', 'Profit & loss'], ['finance', 'Revenue'], ['sales', 'Sales & cashiers'], ['stock', 'Stock'], ['moh705', 'MOH 705 (OPD morbidity)'], c.type !== 'pharmacy' && ['moh711', 'MOH 711 / service summary'], c.lab !== 'none' && ['lab', 'Lab workload'], ['audit', 'Audit trail']]} />
       <div className="printable">
+        {tab === 'profit' && <Profit />}
         {tab === 'finance' && <Finance />}
+        {tab === 'sales' && <Sales />}
         {tab === 'stock' && <Stock />}
         {tab === 'moh705' && <Moh705 />}
         {tab === 'moh711' && <Moh711 />}
@@ -133,4 +135,76 @@ function Audit() {
     <thead><tr><th>Time</th><th>User</th><th>Action</th><th>Record</th></tr></thead>
     <tbody>{(rows || []).map(r => <tr key={r.id}><td className="small">{fmtDT(r.created_at)}</td><td>{r.user}</td><td>{r.action}</td><td className="small">{r.entity} #{r.entity_id}</td></tr>)}</tbody>
   </table>{rows && !rows.length && <Empty>No activity yet.</Empty>}<p className="faint small" style={{ padding: 10 }}>Every view or change of a patient record is logged (Data Protection Act, 2019).</p></div>;
+}
+
+// ---------- profit and loss ----------
+function Profit() {
+  const [from, setFrom] = useState(minus(29)); const [to, setTo] = useState(todayISO());
+  const [d] = useData(`/reports/profit?from=${from}&to=${to}`, [from, to]);
+  return <div>
+    <Range from={from} to={to} setFrom={setFrom} setTo={setTo} />
+    {!d ? null : <>
+      <div className="grid g4">
+        <Stat icon="cash" label="Net sales" value={money(d.netSales)} hint={`after ${money(d.discounts)} discounts and ${money(d.refunds)} refunds`} />
+        <Stat icon="box" label="Gross profit" value={money(d.gross)} hint={`${d.grossMargin}% margin · cost of goods ${money(d.cogs)}`} />
+        <Stat icon="billing" label="Expenses" value={money(d.expenses)} hint={d.shrinkage ? `+ ${money(d.shrinkage)} stock written off` : 'rent, salaries, utilities…'} />
+        <Stat icon="trend" label="Net profit" value={money(d.net)} tone={d.net < 0 ? 'warn' : null} hint={d.netSales ? `${Math.round(d.net / d.netSales * 100)}% of sales` : ''} />
+      </div>
+      <div className="grid g2 mt">
+        <div className="card"><h3>Profit and loss statement</h3>
+          <table className="table"><tbody>
+            <tr><td>Sales</td><td className="num">{money(d.sales)}</td></tr>
+            <tr><td className="muted">less discounts</td><td className="num">−{money(d.discounts)}</td></tr>
+            <tr><td className="muted">less refunds</td><td className="num">−{money(d.refunds)}</td></tr>
+            <tr><td><b>Net sales</b></td><td className="num"><b>{money(d.netSales)}</b></td></tr>
+            <tr><td className="muted">less cost of medicines and supplies sold</td><td className="num">−{money(d.cogs)}</td></tr>
+            <tr><td><b>Gross profit</b></td><td className="num"><b>{money(d.gross)}</b></td></tr>
+            {d.expenseByCat.map(e => <tr key={e.category}><td className="muted">less {e.category.toLowerCase()}</td><td className="num">−{money(e.amount)}</td></tr>)}
+            {d.shrinkage > 0 && <tr><td className="muted">less stock written off (damage, expiry, loss)</td><td className="num">−{money(d.shrinkage)}</td></tr>}
+            <tr><td><b>Net profit</b></td><td className="num"><b style={{ color: d.net < 0 ? 'var(--bad)' : 'var(--good)' }}>{money(d.net)}</b></td></tr>
+          </tbody></table>
+          <p className="faint small">Services (consultation, lab, procedures) have no stock cost, so their full price counts as gross profit. Record staff and running costs under Billing → Expenses for an accurate net figure.</p></div>
+        <div className="card"><h3>Where the money comes from</h3>
+          <ResponsiveContainer width="100%" height={240}><BarChart data={d.bySource.map(x => ({ ...x, kind: x.kind[0].toUpperCase() + x.kind.slice(1) }))} layout="vertical" margin={{ left: 20 }}>
+            <CartesianGrid strokeDasharray="3 3" horizontal={false} /><XAxis type="number" tickFormatter={v => (v / 1000).toFixed(0) + 'k'} /><YAxis type="category" dataKey="kind" width={90} /><Tooltip formatter={v => money(v)} /><Bar dataKey="amount" fill="var(--brand)" radius={[0, 6, 6, 0]} /></BarChart></ResponsiveContainer></div>
+      </div>
+      <div className="grid g2 mt">
+        <div className="card"><div className="row"><h3>Most profitable items</h3><button className="sm right noprint" onClick={() => csv('item-profit.csv', d.items)}>Export</button></div>
+          <table className="table small"><thead><tr><th>Item</th><th className="num">Revenue</th><th className="num">Cost</th><th className="num">Profit</th><th className="num">Margin</th></tr></thead>
+            <tbody>{d.items.slice(0, 15).map(i => <tr key={i.id}><td>{i.name}</td><td className="num">{money(i.revenue)}</td><td className="num">{money(i.cost)}</td><td className="num"><b>{money(i.profit)}</b></td><td className="num">{i.margin}%</td></tr>)}</tbody></table>
+          {!d.items.length && <Empty icon="box">No item sales in this period.</Empty>}</div>
+        <div className="card"><h3>Dead stock (no sales in 90 days)</h3>
+          <table className="table small"><thead><tr><th>Item</th><th>In stock</th><th className="num">Money tied up</th></tr></thead>
+            <tbody>{d.dead.map(i => <tr key={i.id}><td>{i.name}</td><td>{i.stock_text}</td><td className="num">{money(i.value)}</td></tr>)}</tbody></table>
+          {!d.dead.length && <Empty icon="box">Everything in stock sold at least once in 90 days.</Empty>}
+          <p className="faint small">Return slow items to the supplier, transfer them to a busier branch, or stop reordering them.</p></div>
+      </div>
+      {d.worst.some(w => w.margin < 15) && <div className="card mt"><h3>Low-margin items to re-price</h3>
+        <table className="table small"><tbody>{d.worst.filter(w => w.margin < 15).map(i => <tr key={i.id}><td>{i.name}</td><td className="num">{money(i.revenue)} sold</td><td className="num"><Badge tone={i.margin < 0 ? 'bad' : 'warn'}>{i.margin}% margin</Badge></td></tr>)}</tbody></table></div>}
+    </>}
+  </div>;
+}
+
+// ---------- daily sales, cashiers, hours ----------
+function Sales() {
+  const [from, setFrom] = useState(todayISO()); const [to, setTo] = useState(todayISO());
+  const [d] = useData(`/reports/sales?from=${from}&to=${to}`, [from, to]);
+  if (!d) return <Range from={from} to={to} setFrom={setFrom} setTo={setTo} />;
+  const cashiers = {};
+  d.byCashier.forEach(r => { cashiers[r.by_user] ||= { name: r.by_user, total: 0, n: 0 }; cashiers[r.by_user][r.method] = r.amount; cashiers[r.by_user].total += r.amount; cashiers[r.by_user].n += r.n; });
+  const methods = [...new Set(d.byCashier.map(r => r.method))];
+  return <div>
+    <Range from={from} to={to} setFrom={setFrom} setTo={setTo} />
+    <div className="grid g4"><Stat icon="billing" label="Receipts" value={d.receipts} /><Stat icon="cash" label="Taken" value={money(Object.values(cashiers).reduce((a, x) => a + x.total, 0))} />
+      <Stat icon="undo" label="Refunds" value={money(d.refunds.reduce((a, r) => a + r.amount, 0))} hint={`${d.refunds.length} refund${d.refunds.length === 1 ? '' : 's'}`} />
+      <Stat icon="queue" label="Shifts" value={d.shifts.length} hint={d.shifts.filter(s => s.variance).length ? `${d.shifts.filter(s => s.variance).length} not balanced` : 'all balanced'} tone={d.shifts.some(s => s.variance) ? 'warn' : null} /></div>
+    <div className="grid g2 mt">
+      <div className="card"><h3>By cashier</h3><table className="table small"><thead><tr><th>Cashier</th>{methods.map(m => <th key={m} className="num">{m === 'mpesa' ? 'M-Pesa' : m[0].toUpperCase() + m.slice(1)}</th>)}<th className="num">Total</th></tr></thead>
+        <tbody>{Object.values(cashiers).map(x => <tr key={x.name}><td><b>{x.name}</b></td>{methods.map(m => <td key={m} className="num">{x[m] ? money(x[m]) : '-'}</td>)}<td className="num"><b>{money(x.total)}</b></td></tr>)}</tbody></table></div>
+      <div className="card"><h3>Busy hours</h3><ResponsiveContainer width="100%" height={220}><BarChart data={d.byHour.map(h => ({ ...h, hour: h.hour + ':00' }))}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="hour" /><YAxis tickFormatter={v => (v / 1000).toFixed(0) + 'k'} /><Tooltip formatter={v => money(v)} /><Bar dataKey="amount" fill="var(--brand)" radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer></div>
+    </div>
+    <div className="card mt"><div className="row"><h3>Items sold</h3><button className="sm right noprint" onClick={() => csv('items-sold.csv', d.items)}>Export</button></div>
+      <table className="table small"><thead><tr><th>Item</th><th className="num">Quantity</th><th className="num">Amount</th></tr></thead><tbody>{d.items.map((i, k) => <tr key={k}><td>{i.description}</td><td className="num">{i.qty}</td><td className="num">{money(i.amount)}</td></tr>)}</tbody></table>
+      {!d.items.length && <Empty icon="box">No item sales in this period.</Empty>}</div>
+  </div>;
 }

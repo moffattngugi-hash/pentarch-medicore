@@ -2,6 +2,8 @@ import React, { useContext, useEffect, useState } from 'react';
 import { api } from '../api';
 import { ConfigContext } from '../App';
 import { useData, Modal, Field, Tabs, StatusBadge, Badge, act, toast, money, fmtDT, fmtTime, Empty, Icon } from '../ui';
+import { askSupervisor } from '../shared/askPin';
+import { Returns, Shifts, Expenses, Customers } from './Cash';
 
 // ---------- M-Pesa STK push (simulated in demo) ----------
 export function MpesaPush({ amount, phone: initPhone, onPaid }) {
@@ -48,9 +50,9 @@ export function PayPanel({ balance, phone, onPay }) {
 // ---------- receipt ----------
 export function Receipt({ bill, onClose }) {
   const c = useContext(ConfigContext);
-  return <Modal title="Receipt" onClose={onClose} footer={<><button onClick={onClose}>Close</button><button className="primary" onClick={() => window.print()}><Icon name="print" size={15} />Print</button></>}>
+  return <Modal title="Receipt" onClose={onClose} footer={<><button onClick={onClose}>Close</button><button className="primary" onClick={() => { document.body.classList.add('print-receipt'); window.print(); setTimeout(() => document.body.classList.remove('print-receipt'), 500); }}><Icon name="print" size={15} />Print</button></>}>
     <div className="receipt printable">
-      <div className="c"><b style={{ fontSize: 15 }}>{c.facility_name}</b><br />{c.location}<br />Tel {c.phone}<br />KRA PIN {c.kra_pin}</div>
+      <div className="c"><b style={{ fontSize: 15 }}>{c.facility_name}</b><br />{c.location}<br />Tel {c.phone}{c.kra_pin ? <><br />KRA PIN {c.kra_pin}</> : null}</div>
       <hr />
       <div>{bill.receipt_no || 'DRAFT'} · {fmtDT(bill.closed_at || bill.created_at)}</div>
       <div>Customer: {bill.name}{bill.mrn ? ` (${bill.mrn})` : ''}</div>
@@ -67,7 +69,9 @@ export function Receipt({ bill, onClose }) {
       <hr />
       <div className="c small">eTIMS: DEMO MODE - not a tax invoice<br />CU {bill.etims?.cu_serial} · Inv {bill.etims?.invoice_no || '-'}<br />
         <svg width="70" height="70" viewBox="0 0 7 7" style={{ margin: '6px auto', display: 'block' }}>{[...Array(49)].map((_, i) => ((i * 7919 + (bill.id || 1) * 31) % 3 === 0) && <rect key={i} x={i % 7} y={Math.floor(i / 7)} width="1" height="1" />)}</svg>
-        Served by {bill.payments[0]?.by_user || '-'}<br />Thank you · Get well soon</div>
+        Served by {bill.payments[0]?.by_user || '-'}<br />
+        {c.till ? <>Pay via M-Pesa Till <b>{c.till}</b><br /></> : null}{c.paybill ? <>Paybill {c.paybill}<br /></> : null}
+        {c.receipt_footer || 'Thank you · Get well soon'}</div>
     </div>
   </Modal>;
 }
@@ -109,9 +113,9 @@ export function Checkout({ id, onClose, onChanged }) {
             <option value="cash">Cash patient</option><option value="sha">SHA</option><option value="insurance">Private insurance</option><option value="corporate">Corporate</option></select>}</div>
         <table className="table small"><tbody>
           {b.lines.map(l => <tr key={l.id}><td>{l.description}<div className="faint">{l.qty} × {money(l.unit_price)} · {fmtTime(l.created_at)}</div></td><td className="num">{money(l.amount)}</td>
-            <td style={{ width: 28 }}>{!closed && <button className="ghost sm" title="Remove (supervisor)" onClick={() => {
-              const pin = c.user.role === 'admin' ? '1234' : window.prompt('Supervisor PIN to remove this charge (demo: 1234)');
-              if (pin) upd(() => api.del(`/bills/${b.id}/lines/${l.id}`, { pin }), 'Charge removed');
+            <td style={{ width: 28 }}>{!closed && <button className="ghost sm" title="Remove (supervisor)" onClick={async () => {
+              const pin = await askSupervisor(c.user, `Removing “${l.description}” from the bill`);
+              if (pin !== null) upd(() => api.del(`/bills/${b.id}/lines/${l.id}`, { pin }), 'Charge removed');
             }}>✕</button>}</td></tr>)}
         </tbody></table>
         {!b.lines.length && <Empty>No charges yet.</Empty>}
@@ -139,7 +143,8 @@ export function Checkout({ id, onClose, onChanged }) {
       </div>
     </div>
     {disc && <Modal title="Discount or waiver" onClose={() => setDisc(null)} footer={<button className="primary" onClick={async () => {
-      const pin = c.user.role === 'admin' ? '1234' : window.prompt('Supervisor PIN (demo: 1234)');
+      const pin = await askSupervisor(c.user, `Discount of KES ${disc.amount || 0}`);
+      if (pin === null) return;
       await upd(() => api.post(`/bills/${b.id}/discount`, { ...disc, pin }), 'Discount applied'); setDisc(null);
     }}>Apply</button>}>
       <div className="fields"><Field label="Amount (KES)"><input type="number" value={disc.amount} onChange={e => setDisc({ ...disc, amount: e.target.value })} /></Field>
@@ -152,7 +157,7 @@ export function Checkout({ id, onClose, onChanged }) {
 export default function Billing({ openId }) {
   const c = useContext(ConfigContext);
   const [tab, setTab] = useState('open');
-  const [list, reload] = useData('/bills?status=' + tab, [tab]);
+  const [list, reload] = useData(['open', 'paid', 'credit'].includes(tab) ? '/bills?status=' + tab : null, [tab]);
   const [open, setOpen] = useState(openId ? Number(openId) : null);
   useEffect(() => { if (openId) setOpen(Number(openId)); }, [openId]);
   return (
@@ -161,8 +166,9 @@ export default function Billing({ openId }) {
         <div><h1>Billing & checkout</h1><p className="sub">{c.billing_mode === 'auto' ? 'Automatic billing: clinical actions post charges. ' : 'Manual billing: build each bill at the cashier. '}{c.auto_checkout ? 'Automatic checkout on.' : 'Manual checkout.'}</p></div>
         <div className="actions"><a href="#/settings" className="small">Change billing mode →</a></div>
       </div>
-      <Tabs value={tab} onChange={setTab} tabs={[['open', 'Open bills'], ['paid', 'Paid (7 days)'], ['credit', 'Credit / debtors']]} />
-      <div className="tablewrap"><table className="table">
+      <Tabs value={tab} onChange={setTab} tabs={[['open', 'Open bills'], ['paid', 'Paid (7 days)'], ['credit', 'Credit / debtors'], ['returns', 'Returns'], ['shifts', 'Shifts & cash-up'], ['expenses', 'Expenses'], ['customers', 'Customers']]} />
+      {tab === 'returns' && <Returns />}{tab === 'shifts' && <Shifts />}{tab === 'expenses' && <Expenses />}{tab === 'customers' && <Customers />}
+      {['open', 'paid', 'credit'].includes(tab) && <div className="tablewrap"><table className="table">
         <thead><tr><th>Opened</th><th>Patient / customer</th><th>Visit</th><th>Payer</th><th className="num">Total</th><th className="num">Paid</th><th className="num">Balance</th><th /></tr></thead>
         <tbody>{(list || []).map(b => <tr key={b.id} className="click" onClick={() => setOpen(b.id)}>
           <td className="small">{fmtDT(b.created_at)}</td><td><b>{b.name}</b> <span className="faint small">{b.mrn || b.receipt_no}</span></td>
@@ -170,7 +176,7 @@ export default function Billing({ openId }) {
           <td className="small" style={{ textTransform: 'uppercase' }}>{b.payer}</td>
           <td className="num">{money(b.total)}</td><td className="num">{money(b.paid)}</td><td className="num"><b>{money(b.balance)}</b></td>
           <td><button className="sm primary">{tab === 'open' ? 'Checkout' : 'View'}</button></td></tr>)}</tbody>
-      </table>{list && !list.length && <Empty>No bills here.</Empty>}</div>
+      </table>{list && !list.length && <Empty>No bills here.</Empty>}</div>}
       {open && <Checkout id={open} onClose={() => { setOpen(null); reload(); if (openId) window.location.hash = '#/billing'; }} onChanged={reload} />}
     </div>
   );

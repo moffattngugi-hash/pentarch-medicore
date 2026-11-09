@@ -23,6 +23,8 @@ function audit(req, action, entity, id) {
   run('INSERT INTO audit(user,action,entity,entity_id,created_at) VALUES(?,?,?,?,?)', userOf(req), action, entity, id, now());
 }
 const PHONE = /^(\+?254|0)?[17]\d{8}$/;
+const H = {}; // helpers shared with commerce.js
+const shiftOf = req => H.openShift ? H.openShift(req)?.id ?? null : null;
 
 // ================= authentication and branch selection =================
 const OPEN = ['/api/health', '/api/bootstrap', '/api/login', '/api/login-users'];
@@ -827,17 +829,32 @@ function saleLine(billId, l, req, refPrefix) {
   addLine(billId, it.name + (byPack ? ` (${it.pack_name} of ${it.pack_size})` : '') + (l.rx_ref ? ` · Rx: ${l.rx_ref}` : ''), 'drug', 'items', it.id, qty, byPack ? it.pack_price : it.price, userOf(req));
 }
 app.post('/api/pos/sale', wrap(req => {
-  const { customer, patient_id, lines = [], payments = [], payer } = req.body;
+  const { customer, patient_id, customer_id, lines = [], payments = [], payer } = req.body;
   if (!lines.length) fail('Cart is empty');
+  if (cfg().require_shift && !shiftOf(req)) fail('Open your shift (cash drawer) before selling');
+  const cu = customer_id ? get('SELECT * FROM customers WHERE id=?', customer_id) : null;
   let billId;
   tx(() => {
-    billId = run('INSERT INTO bills(patient_id,customer_name,payer,status,created_at) VALUES(?,?,?,?,?)', patient_id, customer || 'Walk-in customer', payer || 'cash', 'open', now()).lastInsertRowid;
+    billId = run('INSERT INTO bills(patient_id,customer_name,customer_id,customer_phone,payer,status,created_at) VALUES(?,?,?,?,?,?,?)', patient_id, cu?.name || customer || 'Walk-in customer', cu?.id, cu?.phone, payer || 'cash', 'open', now()).lastInsertRowid;
     for (const l of lines) saleLine(billId, l, req, 'POS-');
     const total = billTotals(billId).total;
-    for (const p of payments) run('INSERT INTO payments(bill_id,method,amount,reference,by_user,created_at) VALUES(?,?,?,?,?,?)', billId, p.method, p.method === 'cash' ? Math.min(Number(p.amount), total) : Number(p.amount), p.reference, userOf(req), now());
+    let left = total;
+    for (const p of payments) {
+      const amt = p.method === 'cash' ? Math.min(Number(p.amount), left) : Number(p.amount);
+      if (!(amt > 0)) continue;
+      run('INSERT INTO payments(bill_id,method,amount,reference,by_user,created_at,shift_id) VALUES(?,?,?,?,?,?,?)', billId, p.method, amt, p.reference, userOf(req), now(), shiftOf(req));
+      left -= amt;
+    }
     const t = billTotals(billId);
-    if (t.balance > 0.01) fail(`Payment is short by KES ${t.balance}`);
-    run("UPDATE bills SET status='paid', receipt_no=?, closed_at=? WHERE id=?", 'POS' + pad(billId), now(), billId);
+    if (t.balance > 0.01) {
+      // the rest can go on a registered customer's account, within their credit limit
+      const cu = customer_id && get('SELECT * FROM customers WHERE id=?', customer_id);
+      if (!cu) fail(`Payment is short by KES ${t.balance}`);
+      const owed = all("SELECT id FROM bills WHERE customer_id=? AND status='credit'", cu.id).reduce((a, x) => a + billTotals(x.id).balance, 0);
+      if (owed + t.balance > (cu.credit_limit || 0) + 0.01) fail(`${cu.name} can only owe KES ${cu.credit_limit || 0}; they already owe KES ${Math.round(owed)}. Take payment for the rest.`);
+      run("UPDATE bills SET status='credit', receipt_no=?, closed_at=? WHERE id=?", 'INV' + pad(billId), now(), billId);
+    } else run("UPDATE bills SET status='paid', receipt_no=?, closed_at=? WHERE id=?", 'POS' + pad(billId), now(), billId);
+    if (customer_id) run('UPDATE customers SET points=points+? WHERE id=?', Math.floor(total / 100), customer_id);
   });
   return receipt(billId);
 }));
@@ -852,7 +869,7 @@ app.post('/api/web-orders/:id/status', wrap(req => {
       const billId = run('INSERT INTO bills(customer_name,payer,status,created_at) VALUES(?,?,?,?)', o.name + ' (web order)', 'cash', 'open', now()).lastInsertRowid;
       for (const l of JSON.parse(o.items)) saleLine(billId, { item_id: l.id, qty: l.qty, mode: l.mode || 'unit', rx_ref: l.rx_only ? 'web order, Rx reviewed' : null }, req, 'WEB-');
       const t = billTotals(billId);
-      run('INSERT INTO payments(bill_id,method,amount,reference,by_user,created_at) VALUES(?,?,?,?,?,?)', billId, payment || 'mpesa', t.total, reference || 'WEB-' + o.id, userOf(req), now());
+      run('INSERT INTO payments(bill_id,method,amount,reference,by_user,created_at,shift_id) VALUES(?,?,?,?,?,?,?)', billId, payment || 'mpesa', t.total, reference || 'WEB-' + o.id, userOf(req), now(), shiftOf(req));
       run("UPDATE bills SET status='paid', receipt_no=?, closed_at=? WHERE id=?", 'WEB' + pad(billId), now(), billId);
     });
   }
@@ -888,18 +905,19 @@ app.post('/api/bills/:id/lines', wrap(req => {
 app.delete('/api/bills/:id/lines/:lineId', wrap(req => {
   const l = get('SELECT * FROM bill_lines WHERE id=? AND bill_id=?', req.params.lineId, req.params.id);
   if (!l) fail('Line not found');
-  if (req.user.role !== 'admin' && req.body?.pin !== '1234') fail('Supervisor PIN required to remove a charge', 403);
+  const approver = H.supervisor(req, req.body?.pin);
   tx(() => {
     run('DELETE FROM bill_lines WHERE id=?', l.id);
     if (['lab_orders', 'imaging_orders', 'prescriptions', 'procedures'].includes(l.ref_table)) run(`UPDATE ${l.ref_table} SET billed=0 WHERE id=?`, l.ref_id);
   });
-  audit(req, 'remove-line:' + l.description, 'bill', req.params.id);
+  audit(req, `remove-line:${l.description} (approved by ${approver})`, 'bill', req.params.id);
   return receipt(req.params.id);
 }));
 app.post('/api/bills/:id/discount', wrap(req => {
   const { amount, reason, pin } = req.body;
-  if (req.user.role !== 'admin' && pin !== '1234') fail('Supervisor PIN required for discounts', 403);
   if (!(Number(amount) > 0)) fail('Enter the discount amount');
+  const approver = H.supervisor(req, pin);
+  audit(req, `discount KES ${amount} approved by ${approver}${reason ? ': ' + reason : ''}`, 'bill', Number(req.params.id));
   if (Number(amount) > billTotals(req.params.id).balance) fail('Discount is more than the balance');
   addLine(req.params.id, 'Discount / waiver' + (reason ? ` - ${reason}` : ''), 'discount', null, null, 1, -Math.abs(Number(amount)), userOf(req));
   closeBillIfSettled(req.params.id);
@@ -914,7 +932,7 @@ app.post('/api/bills/:id/pay', wrap(req => {
   if (bal <= 0) fail('Nothing to pay on this bill');
   if (method !== 'cash' && Number(amount) > bal + 0.01) fail(`Amount is more than the balance of KES ${bal}`);
   const take = Math.min(Number(amount), bal); // cash change is handed back
-  run('INSERT INTO payments(bill_id,method,amount,reference,by_user,created_at) VALUES(?,?,?,?,?,?)', b.id, method, take, reference, userOf(req), now());
+  run('INSERT INTO payments(bill_id,method,amount,reference,by_user,created_at,shift_id) VALUES(?,?,?,?,?,?,?)', b.id, method, take, reference, userOf(req), now(), shiftOf(req));
   closeBillIfSettled(b.id);
   return receipt(b.id);
 }));
@@ -931,7 +949,7 @@ app.post('/api/bills/:id/settle-credit', wrap(req => {
   const b = get('SELECT * FROM bills WHERE id=?', req.params.id);
   const { method, amount, reference } = req.body;
   if (!(Number(amount) > 0)) fail('Enter an amount');
-  run('INSERT INTO payments(bill_id,method,amount,reference,by_user,created_at) VALUES(?,?,?,?,?,?)', b.id, method, Math.min(Number(amount), billTotals(b.id).balance), reference, userOf(req), now());
+  run('INSERT INTO payments(bill_id,method,amount,reference,by_user,created_at,shift_id) VALUES(?,?,?,?,?,?,?)', b.id, method, Math.min(Number(amount), billTotals(b.id).balance), reference, userOf(req), now(), shiftOf(req));
   if (billTotals(b.id).balance <= 0.01) run("UPDATE bills SET status='paid' WHERE id=?", b.id);
   return receipt(b.id);
 }));
@@ -1195,6 +1213,8 @@ app.post('/api/public/order', wrap(req => {
     b.name, b.phone, JSON.stringify(items), total, b.delivery || 'pickup', b.prescription_note, hasRx ? 'awaiting_review' : 'new', now()).lastInsertRowid;
   return { ok: true, order_no: 'WEB-' + id, total, message: hasRx ? 'Order received. A pharmacist will review your prescription and call you before dispensing.' : 'Order received. You will get an M-Pesa prompt once the pharmacy confirms.' };
 }));
+Object.assign(H, { D, R, all, get, run, tx, now, today, wrap, fail, userOf, audit, deduct, fmtQty, stockOf, billTotals, addLine, pad, adminOnly, itemsWithStock, cfg, PHONE });
+require('./commerce')(app, H);
 app.use('/api', (req, res) => res.status(404).json({ error: 'Unknown API route' }));
 
 // ---------- static files ----------
